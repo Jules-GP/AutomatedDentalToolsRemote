@@ -1,19 +1,20 @@
 #-----------------------------------------------------------------------------
 set(MODULE_NAME AutoMatrix)
-set(FOLDER_LIBRARY AutoMatrix_Method)
 
+#-----------------------------------------------------------------------------
+# AutoMatrix_Method/ and Resources/UI/AutoMatrix.ui belonged to the former local
+# module: they built Automatrix_CLI's parameters, counted the scans for the
+# progress bar, and laid out the hand-written panel with its Mirror download
+# button. The module is now a thin client of the server's "AutoMatrix" tool and
+# builds its panel from GET /tools, so none of it is shipped any more. The files
+# are left in the tree rather than deleted, the same way ALI_Method was - see
+# ARCHITECTURE.md.
 set(MODULE_PYTHON_SCRIPTS
   ${MODULE_NAME}.py
-  ${FOLDER_LIBRARY}/__init__.py
-  ${FOLDER_LIBRARY}/applyMatrix.py
-  ${FOLDER_LIBRARY}/General_tools.py
-  ${FOLDER_LIBRARY}/Method.py
-  ${FOLDER_LIBRARY}/Progress.py
 )
 
 set(MODULE_PYTHON_RESOURCES
   Resources/Icons/${MODULE_NAME}.png
-  Resources/UI/${MODULE_NAME}.ui
 )
 
 #-----------------------------------------------------------------------------
