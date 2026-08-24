@@ -96,6 +96,16 @@ class QLayout(QObject):
     def addWidget(self, widget, stretch=0):
         self.widgets.append(widget)
 
+    def __call__(self):
+        """`widget.layout` is a METHOD in Qt and an attribute here.
+
+        These tests read it as an attribute throughout, and formgen calls
+        `holder.layout()` on a grid cell. Making a layout callable lets both
+        spellings reach the same object instead of forcing every test to pick
+        a side.
+        """
+        return self
+
 
 class QVBoxLayout(QLayout):
     pass
@@ -467,6 +477,33 @@ class ctkSliderWidget(QObject):
         self.value = new_value
 
 
+class qMRMLNodeComboBox(QObject):
+    """The scene-node picker a `volume_node`/`model_node` row is built from.
+
+    Enough of it to be filled and read: which classes it offers, which node is
+    current, and the signal a panel connects to. `nodeTypes` and `noneEnabled`
+    are writable properties under PythonQt, as they are here.
+    """
+
+    def __init__(self):
+        QObject.__init__(self)
+        self.nodeTypes = []
+        self.noneEnabled = True
+        self.scene = None
+        self._node = None
+        self.currentNodeChanged = Signal()
+
+    def setMRMLScene(self, scene):
+        self.scene = scene
+
+    def setCurrentNode(self, node):
+        self._node = node
+        self.currentNodeChanged.emit(node)
+
+    def currentNode(self):
+        return self._node
+
+
 def install():
     """Register the fake `qt`, `ctk` and `slicer` modules in sys.modules.
 
@@ -486,5 +523,11 @@ def install():
 
     sys.modules.setdefault("qt", qt)
     sys.modules.setdefault("ctk", ctk)
-    sys.modules.setdefault("slicer", types.ModuleType("slicer"))
+    slicer = sys.modules.setdefault("slicer", types.ModuleType("slicer"))
+    # Set unconditionally: `setdefault` above does nothing when a previous
+    # install() already registered the module, and a stub missing the node
+    # picker fails only in the module that happens to use one.
+    slicer.qMRMLNodeComboBox = qMRMLNodeComboBox
+    if not hasattr(slicer, "mrmlScene"):
+        slicer.mrmlScene = None
     return qt, ctk

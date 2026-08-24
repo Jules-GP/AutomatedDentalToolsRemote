@@ -30,9 +30,18 @@ logger = logging.getLogger("ServerToolsCore.base_widget")
 # "auto" is the schema-driven default: the argument's `types` decide whether it
 # gets a file picker, a folder picker, or the choice between both (and which
 # extensions the file picker offers). The explicit modes are for what the
-# schema cannot express — picking a volume from the MRML scene — for forcing
+# schema cannot express — picking a node out of the MRML scene — for forcing
 # one selection kind, or ("none") for not offering an argument at all.
-_FILE_INPUT_MODES = ("auto", "single_file", "folder_zip", "file_or_folder", "volume_node", "none")
+_FILE_INPUT_MODES = ("auto", "single_file", "folder_zip", "file_or_folder",
+                     "volume_node", "model_node", "none")
+# {mode: (MRML class the dropdown offers, extension it is exported under)}.
+# One table rather than three parallel branches: a mode added here is a mode
+# the picker, the upload and the "is Apply ready" check all learn at once.
+_SCENE_NODE_MODES = {
+    "volume_node": ("vtkMRMLScalarVolumeNode", ".nii.gz"),
+    "model_node": ("vtkMRMLModelNode", ".vtk"),
+}
+
 _RESULT_KINDS = ("text", "segmentation", "labelmap", "volume", "model", "save_as")
 
 # The box holding the output folder picker, which no schema argument owns. A
@@ -52,8 +61,9 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # -- declared by subclasses --------------------------------------
     TOOL_NAME = None
     # {schema_argument_name: mode} merged over the schema's own file arguments.
-    # Only what the schema cannot say: "volume_node", a forced picker kind, or
-    # "none" to leave an optional file argument out. See _FILE_INPUT_MODES.
+    # Only what the schema cannot say: "volume_node"/"model_node", a forced
+    # picker kind, or "none" to leave an optional file argument out. See
+    # _FILE_INPUT_MODES.
     FILE_INPUTS = {}
     # None -> derived from the tool's output_kind. Declare one only when that
     # is ambiguous: output_kind "file" says a file comes back, not whether to
@@ -525,9 +535,9 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
             else design.optional_label(label)
         )
 
-        if mode == "volume_node":
+        if mode in _SCENE_NODE_MODES:
             widget = slicer.qMRMLNodeComboBox()
-            widget.nodeTypes = ["vtkMRMLScalarVolumeNode"]
+            widget.nodeTypes = [_SCENE_NODE_MODES[mode][0]]
             widget.noneEnabled = True
             widget.setMRMLScene(slicer.mrmlScene)
             target.addRow(labelWidget, widget)
@@ -821,11 +831,17 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
             if widget.is_folder():
                 return self._zipFolder(workspace, arg_name, widget.currentPath)
             return widget.currentPath
-        if mode == "volume_node":
+        if mode in _SCENE_NODE_MODES:
             node = widget.currentNode()
             if node is None:
                 return None
-            return slicer_io.export_volume(node, workspace.file(f"{self.TOOL_NAME}_{arg_name}.nii.gz"))
+            # Written out under the extension that mode implies: a volume as
+            # NIfTI, a surface as `.vtk`, which is the one format that carries
+            # the per-point label array a tool reads the teeth off.
+            extension = _SCENE_NODE_MODES[mode][1]
+            return slicer_io.export_node(
+                node, workspace.file(f"{self.TOOL_NAME}_{arg_name}{extension}")
+            )
         return None
 
     def _zipFolder(self, workspace: slicer_io.TempWorkspace, arg_name: str, folder: str) -> str:
@@ -900,7 +916,7 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
             if not arguments.get(arg_name, {}).get("required", True):
                 continue
             widget = self._inputWidgets.get(arg_name)
-            if mode == "volume_node":
+            if mode in _SCENE_NODE_MODES:
                 if widget is None or widget.currentNode() is None:
                     return False
                 continue

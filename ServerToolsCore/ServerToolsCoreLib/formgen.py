@@ -1233,8 +1233,9 @@ def file_input_modes(arguments_schema: dict, overrides=None) -> dict:
     file-typed argument gets an input row. A module's `FILE_INPUTS` is merged
     on top and only has to say what the schema cannot express —
 
-    - `"volume_node"`: filled from a node in the MRML scene rather than from
-      disk. The server does not know a scene exists;
+    - `"volume_node"` / `"model_node"`: filled from a node in the MRML scene
+      rather than from disk, and exported at upload time. The server does not
+      know a scene exists;
     - a forced `"folder_zip"`/`"single_file"`: SurgMovPred's `input` is typed
       `zip_file`, and the module still wants to hand the user a folder picker
       and zip it client-side. "Give me a zip" is the contract; "let them pick a

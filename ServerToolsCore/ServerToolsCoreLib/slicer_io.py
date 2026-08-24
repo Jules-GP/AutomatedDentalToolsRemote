@@ -42,11 +42,21 @@ class TempWorkspace:
         return os.path.join(self.path, name)
 
 
-def export_volume(volume_node, dest_path: str) -> str:
-    ok = slicer.util.saveNode(volume_node, dest_path)
+def export_node(node, dest_path: str) -> str:
+    """Write a scene node out to `dest_path`, which is what says its format.
+
+    One function for volumes and surfaces alike: `saveNode` picks its writer
+    from the extension, and the caller already had to choose one.
+    """
+    ok = slicer.util.saveNode(node, dest_path)
     if not ok:
-        raise IOError(f"Failed to export volume to {dest_path}")
+        raise IOError(f"Failed to export {node.GetName()} to {dest_path}")
     return dest_path
+
+
+def export_volume(volume_node, dest_path: str) -> str:
+    """Kept as its own name: it is what the modules already call."""
+    return export_node(volume_node, dest_path)
 
 
 def is_extractable_archive(path: str) -> bool:
