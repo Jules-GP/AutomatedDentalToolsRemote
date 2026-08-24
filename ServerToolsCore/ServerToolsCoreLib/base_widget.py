@@ -721,6 +721,20 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
         GUI, before Apply/Cancel — this is the supported way to extend a module
         without touching setup()."""
 
+    def outputDirectory(self, workspace: slicer_io.TempWorkspace) -> str:
+        """Where this run's results are written: the folder the panel offers,
+        or the request's own scratch directory for a tool that shows none.
+
+        Overridable for a run whose results are NOT meant to be kept —
+        FlexReg's "See" shows a registration in the third view and keeps
+        nothing. It cannot use `workspace` for that: _teardownJob deletes it
+        before handleResult is called, so a run that reads its own output
+        afterwards has to own the directory it wrote to.
+        """
+        if self._outputFolderWidget:
+            return self._outputFolderWidget.currentPath
+        return workspace.path
+
     # ------------------------------------------------------------------
     # Overridable data hooks
     # ------------------------------------------------------------------
@@ -949,7 +963,7 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
             slicer.util.errorDisplay(str(exc))
             return
 
-        outputDir = self._outputFolderWidget.currentPath if self._outputFolderWidget else self._workspace.path
+        outputDir = self.outputDirectory(self._workspace)
 
         self.applyButton.setVisible(False)
         self.cancelButton.setVisible(True)
