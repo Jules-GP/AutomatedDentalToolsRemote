@@ -1367,7 +1367,15 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
             ),
             8000,
         )
-        logger.info("test file %r ready in %.1fs (%s)", name, total, breakdown)
+        # `print` as well as the logger, deliberately. A module logger does not
+        # reach Slicer's Python console, so the one measurement that answers
+        # "why did that feel slow" was written where nobody could read it --
+        # the same mistake as the server's peak VRAM, recorded on every run and
+        # never read back. One line per download is not noise; it is the line
+        # someone pastes into a bug report.
+        summary = "[test file] {} ready in {:.1f}s -- {}".format(name, total, breakdown)
+        print(summary)
+        logger.info(summary)
 
     # ------------------------------------------------------------------
     # Server status banner
