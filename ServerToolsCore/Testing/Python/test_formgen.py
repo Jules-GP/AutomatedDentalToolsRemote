@@ -865,7 +865,7 @@ class VisibilityTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Input sources: open scene volumes and the inline test-data button
+# Input sources: the tool's server-hosted test files and the scene's volumes
 # ---------------------------------------------------------------------------
 
 _VOLUME_SPEC = {
@@ -895,106 +895,204 @@ class AcceptsVolumeTest(unittest.TestCase):
         self.assertFalse(formgen.accepts_volume(spec))
 
 
+class HumanSizeTest(unittest.TestCase):
+    """A test file's size is shown to a clinician deciding whether to click it,
+    so it has to read as a size."""
+
+    def test_bytes_megabytes_and_gigabytes(self):
+        self.assertEqual(formgen.human_size(2969), "2.9 KB")
+        self.assertEqual(formgen.human_size(94 * 1024 * 1024), "94 MB")
+        self.assertEqual(formgen.human_size(648 * 1024 * 1024), "648 MB")
+        self.assertEqual(formgen.human_size(7 * 1024 * 1024 + 419430), "7.4 MB")
+        self.assertEqual(formgen.human_size(3 * 1024 ** 3), "3.0 GB")
+        self.assertEqual(formgen.human_size(512), "512 B")
+
+    def test_an_unknown_size_renders_nothing_rather_than_zero(self):
+        """A backend that cannot size a tree cheaply sends null, and "0 B"
+        would be a claim where the server made none."""
+        self.assertEqual(formgen.human_size(None), "")
+        self.assertEqual(formgen.human_size(0), "")
+        self.assertEqual(formgen.human_size("355640000"), "")
+
+
+class HostedEntryLabelTest(unittest.TestCase):
+    """What one server-hosted test file reads as in the picker."""
+
+    def test_kind_and_size_are_both_shown(self):
+        self.assertEqual(
+            formgen.hosted_entry_label(
+                {"name": "CBCT_FullyAuto", "kind": "folder", "size": 355640000}
+            ),
+            "CBCT_FullyAuto  (folder, 339 MB)",
+        )
+
+    def test_a_known_kind_alone_still_reads(self):
+        self.assertEqual(
+            formgen.hosted_entry_label({"name": "ROI_box.mrk.json", "kind": "file", "size": None}),
+            "ROI_box.mrk.json  (file)",
+        )
+
+    def test_an_entry_that_says_nothing_extra_is_just_its_name(self):
+        self.assertEqual(
+            formgen.hosted_entry_label({"name": "scan.nii.gz", "kind": None, "size": None}),
+            "scan.nii.gz",
+        )
+
+
 class InputSourcesTest(unittest.TestCase):
-    """The one-line input row: [sources dropdown][local picker][test data],
-    with the scene's volumes offered between the upload entry and the
-    server-hosted names."""
+    """The one-line input row: [sources dropdown][local picker], with the
+    tool's server-hosted test files above the scene's open volumes.
+
+    There is no "Upload my own file..." entry any more: it was a MODE dressed
+    as a file, and what says whether the argument has been given anything is
+    the path field.
+    """
 
     def setUp(self):
         self.widget = formgen.file_widget(_VOLUME_SPEC, "file_or_folder")
+        self.widget.setChoices([
+            {"name": "MG_test_scan.nii.gz", "kind": "file", "size": 94 * 1024 * 1024},
+        ])
         self.widget.setVolumeChoices(["CBCT_patient1", "CBCT_patient2"])
-        self.widget.setChoices(["MG_test_scan.nii.gz"])
 
     def test_the_whole_row_is_one_line(self):
-        # The dropdown used to sit on its own line above the picker; now the
-        # container's layout is horizontal and the combo leads it.
         layout = self.widget.container.layout
         self.assertIsInstance(layout, qt.QHBoxLayout)
         self.assertIs(layout.widgets[0], self.widget.combo)
 
-    def test_entries_are_upload_then_volumes_then_server_files(self):
+    def test_entries_are_the_prompt_then_test_files_then_volumes(self):
         combo = self.widget.combo
         self.assertEqual(
             [combo.itemText(i) for i in range(combo.count)],
             [
-                formgen.ServerFileInput.UPLOAD_OPTION,
+                formgen.ServerFileInput.CHOOSE_OPTION,
+                "MG_test_scan.nii.gz  (file, 94 MB)",
                 formgen.OPEN_VOLUME_PREFIX + "CBCT_patient1",
                 formgen.OPEN_VOLUME_PREFIX + "CBCT_patient2",
-                "MG_test_scan.nii.gz",
             ],
         )
 
-    def test_choosing_a_volume_is_not_a_server_selection(self):
+    def test_the_prompt_is_the_path_fields_own_words(self):
+        """One affordance, one prompt: the dropdown's first entry and the empty
+        path field say the same thing, because they mean the same thing."""
+        self.assertEqual(formgen.ServerFileInput.CHOOSE_OPTION, formgen.PATH_PLACEHOLDER)
+        self.assertEqual(self.widget.local.pathEdit.placeholderText, formgen.PATH_PLACEHOLDER)
+
+    def test_the_default_state_names_nothing(self):
+        self.assertEqual(self.widget.hosted_name(), "")
+        self.assertEqual(self.widget.volume_name(), "")
+        self.assertEqual(self.widget.currentPath, "")
+
+    def test_choosing_a_test_file_hands_its_name_to_the_callback(self):
+        """formgen never talks HTTP: it reports the pick and base_widget
+        downloads it."""
+        picked = []
+        self.widget.setHostedCallback(picked.append)
+
         self.widget.combo.setCurrentIndex(1)
 
+        self.assertEqual(picked, ["MG_test_scan.nii.gz"])
+
+    def test_a_test_file_pick_clears_a_previously_chosen_path(self):
+        """Cleared when the pick starts, not when the download lands: a run
+        launched mid-download must not send the file it replaced."""
+        self.widget.local.pathEdit.setText("/data/my_own_scan.nii.gz")
+
+        self.widget.combo.setCurrentIndex(1)
+
+        self.assertEqual(self.widget.currentPath, "")
+
+    def test_the_downloaded_path_becomes_an_ordinary_local_selection(self):
+        self.widget.setHostedCallback(
+            lambda name: formgen.set_local_path(self.widget, "/tmp/session/" + name)
+        )
+
+        self.widget.combo.setCurrentIndex(1)
+
+        self.assertEqual(self.widget.currentPath, "/tmp/session/MG_test_scan.nii.gz")
+        # The dropdown is an action list, not a mode: once the file is on disk
+        # the path field is the whole of the state.
+        self.assertEqual(self.widget.combo.currentIndex, 0)
+        self.assertEqual(self.widget.hosted_name(), "")
+
+    def test_choosing_a_volume_is_not_a_test_file_selection(self):
+        self.widget.combo.setCurrentIndex(2)
+
         self.assertEqual(self.widget.volume_name(), "CBCT_patient1")
-        self.assertEqual(self.widget.server_name(), "")
+        self.assertEqual(self.widget.hosted_name(), "")
         # Nothing to read off disk either: the node is exported at upload time.
         self.assertEqual(self.widget.currentPath, "")
 
     def test_choosing_a_volume_clears_the_local_path(self):
         self.widget.local.pathEdit.setText("/data/scan.nii.gz")
 
-        self.widget.combo.setCurrentIndex(2)
+        self.widget.combo.setCurrentIndex(3)
 
         self.assertEqual(self.widget.local.currentPath, "")
 
     def test_typing_a_local_path_resets_the_dropdown(self):
-        self.widget.combo.setCurrentIndex(1)
+        self.widget.combo.setCurrentIndex(2)
 
         self.widget.local.pathEdit.setText("/data/scan.nii.gz")
 
         self.assertEqual(self.widget.volume_name(), "")
         self.assertEqual(self.widget.currentPath, "/data/scan.nii.gz")
 
-    def test_a_chosen_volume_survives_a_server_list_refresh(self):
-        self.widget.combo.setCurrentIndex(1)
+    def test_a_chosen_volume_survives_a_test_file_list_refresh(self):
+        self.widget.combo.setCurrentIndex(2)
 
-        self.widget.setChoices(["MG_test_scan.nii.gz", "cohort_10_patients.zip"])
+        self.widget.setChoices([
+            {"name": "MG_test_scan.nii.gz", "kind": "file", "size": 94 * 1024 * 1024},
+            {"name": "cohort_10_patients.zip", "kind": "file", "size": None},
+        ])
 
         self.assertEqual(self.widget.volume_name(), "CBCT_patient1")
 
-    def test_a_gone_volume_falls_back_to_upload(self):
-        self.widget.combo.setCurrentIndex(1)
+    def test_a_gone_volume_falls_back_to_the_prompt(self):
+        self.widget.combo.setCurrentIndex(2)
 
         self.widget.setVolumeChoices([])
 
         self.assertEqual(self.widget.volume_name(), "")
-        self.assertEqual(self.widget.combo.currentText, formgen.ServerFileInput.UPLOAD_OPTION)
+        self.assertEqual(self.widget.combo.currentText, formgen.ServerFileInput.CHOOSE_OPTION)
 
-    def test_a_server_name_looking_like_a_volume_entry_is_not_misread(self):
+    def test_a_refresh_starts_no_download_of_its_own(self):
+        """clear()+addItems reselects index 0 and would otherwise fire the
+        selection handler for a choice nobody made."""
+        picked = []
+        self.widget.setHostedCallback(picked.append)
+
+        self.widget.setChoices([{"name": "MG_test_scan.nii.gz", "kind": "file", "size": 1}])
+        self.widget.setVolumeChoices(["CBCT_patient1"])
+
+        self.assertEqual(picked, [])
+
+    def test_a_test_file_named_like_a_volume_entry_is_not_misread(self):
         # Selection kind is decided by index, so even a hosted file named
-        # like a volume entry stays a server selection.
+        # like a volume entry stays a hosted selection.
         tricky = formgen.OPEN_VOLUME_PREFIX + "CBCT_patient1"
-        self.widget.setChoices([tricky])
+        self.widget.setChoices([{"name": tricky, "kind": None, "size": None}])
 
-        self.widget.combo.setCurrentIndex(3)
+        self.widget.combo.setCurrentIndex(1)
 
-        self.assertEqual(self.widget.server_name(), tricky)
+        self.assertEqual(self.widget.hosted_name(), tricky)
         self.assertEqual(self.widget.volume_name(), "")
 
+    def test_bare_names_are_accepted_as_entries(self):
+        """A caller holding only names -- an older server publishes no
+        `entries` at all -- still gets a working list."""
+        self.widget.setChoices(["a.nii.gz", "b.nii.gz"])
 
-class DownloadButtonTest(unittest.TestCase):
-    """The inline test-data button: built only when the module declared a
-    TEST_DATA URL, wherever the composite puts it."""
+        self.assertEqual(self.widget.combo.itemText(1), "a.nii.gz")
+        self.assertEqual(
+            self.widget.hosted_entries(),
+            [{"name": "a.nii.gz", "kind": None, "size": None},
+             {"name": "b.nii.gz", "kind": None, "size": None}],
+        )
 
-    def test_no_declaration_means_no_button(self):
-        widget = formgen.file_widget(_VOLUME_SPEC, "file_or_folder")
-        self.assertIsNone(formgen.download_button(widget))
 
-    def test_a_wrapped_input_hosts_the_button_at_the_end_of_its_row(self):
-        widget = formgen.file_widget(_VOLUME_SPEC, "file_or_folder", with_download=True)
-
-        button = formgen.download_button(widget)
-        self.assertIsNotNone(button)
-        self.assertIs(widget.container.layout.widgets[-1], button)
-
-    def test_a_bare_file_or_folder_input_hosts_it_itself(self):
-        spec = EXAMPLE_TOOL_SCHEMA["arguments"]["input"]  # csv or folder, no wrap
-        widget = formgen.file_widget(spec, "file_or_folder", with_download=True)
-
-        self.assertIsInstance(widget, formgen.FileOrFolderInput)
-        self.assertIsNotNone(formgen.download_button(widget))
+class SetLocalPathTest(unittest.TestCase):
+    """Writing a downloaded path into an input row, whichever shape it has."""
 
     def test_set_local_path_reaches_the_path_field_of_either_shape(self):
         wrapped = formgen.file_widget(_VOLUME_SPEC, "file_or_folder")
@@ -1005,6 +1103,13 @@ class DownloadButtonTest(unittest.TestCase):
 
         self.assertEqual(wrapped.currentPath, "/downloads/scan.nii.gz")
         self.assertEqual(bare.currentPath, "/downloads/cohort")
+
+    def test_an_argument_with_no_extra_source_is_a_bare_picker(self):
+        """No dropdown at all where there is nothing to put in it: example_tool's
+        csv input is neither server_selectable nor volume-ish."""
+        bare = formgen.file_widget(EXAMPLE_TOOL_SCHEMA["arguments"]["input"], "file_or_folder")
+        self.assertIsInstance(bare, formgen.FileOrFolderInput)
+        self.assertFalse(hasattr(bare, "combo"))
 
 
 # ---------------------------------------------------------------------------

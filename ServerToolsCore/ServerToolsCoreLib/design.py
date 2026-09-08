@@ -273,7 +273,7 @@ def secondary_button(text: str) -> qt.QPushButton:
 
 
 def compact_button(text: str) -> qt.QPushButton:
-    """A small inline button for a form row (browse, test-data download): the
+    """A small inline button for a form row (the browse actions): the
     primary gradient with tighter padding and no top margin, so a row of them
     stays one text-field tall and the whole input fits on a single line."""
     t = tokens()

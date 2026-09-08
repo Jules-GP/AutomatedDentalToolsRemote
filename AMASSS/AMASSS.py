@@ -73,12 +73,6 @@ class AMASSSWidget(ServerToolWidgetBase):
     # `scans`, not `input`: packaging renamed it. The argument name is part of
     # what the client sends, so it has to match the tool's run() signature.
     FILE_INPUTS = {"scans": "auto"}
-    # The original module's "Download test scan" button, ported: the same
-    # MG_test_scan it pointed the browser at, now downloaded in place and
-    # set as the input.
-    TEST_DATA = {
-        "scans": "https://github.com/Maxlo24/AMASSS_CBCT/releases/download/v1.0.1/MG_test_scan.nii.gz"
-    }
     # output_kind "files": one <scan>_<ID>_SegOut/ folder per scan plus
     # AMASSS_report.json, bundled into one .zip and unpacked into the output
     # folder the user picks. The model is picked server-side, hence no

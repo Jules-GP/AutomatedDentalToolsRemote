@@ -10,8 +10,10 @@ See ARCHITECTURE.md, "How to add a new module in 5 minutes".
 
 import logging
 import os
+import re
 import shutil
 import time
+import zipfile
 
 import ctk
 import qt
@@ -20,8 +22,7 @@ from slicer.i18n import tr as _
 from slicer.ScriptedLoadableModule import ScriptedLoadableModuleWidget
 from slicer.util import VTKObservationMixin
 
-from . import design, formgen, is_file_type, slicer_io
-from .client import download_file
+from . import design, formgen, is_file_type, slicer_io, testfile_entries
 from .errors import ServerToolError
 from .worker import BackgroundJob
 
@@ -41,6 +42,18 @@ _RESULT_KINDS = ("text", "segmentation", "labelmap", "volume", "model", "save_as
 # separate widget.
 _OUTPUTS_SECTION = "Outputs"
 
+# Characters a hosted test file's name may not contribute to a path built from
+# it. The name comes from the server's own listing rather than from a user, but
+# it is joined onto a local directory, and a "/" or a ".." in one would place
+# the download somewhere nobody asked for.
+_UNSAFE_NAME_CHARACTERS = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _safe_name(name: str) -> str:
+    """A single, harmless path component for a hosted entry's name."""
+    cleaned = _UNSAFE_NAME_CHARACTERS.sub("_", os.path.basename(name)).strip("._-")
+    return cleaned or "test_file"
+
 
 class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
     """Only TOOL_NAME is required. Everything the tool's own schema already
@@ -59,15 +72,14 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # is ambiguous: output_kind "file" says a file comes back, not whether to
     # load it into the scene ("volume"/"model") or save it ("save_as").
     RESULT_KIND = None
-    # {schema argument name: URL} of the original extension's test data, a
-    # GitHub release asset. Declaring one puts a "Test data" button at the end
-    # of that argument's input row; the payload lands in
-    # ~/Documents/<app>Downloads/<tool>/Test_Files (where the original modules
-    # downloaded) and the row is pointed at it. This complements the
-    # server-hosted dropdown (server_selectable): that one never travels,
-    # this one is for data the user wants ON THEIR OWN DISK.
-    TEST_DATA = {}
     AUTO_UI = True
+
+    # There is deliberately no TEST_DATA attribute any more. A tool's test data
+    # is what the SERVER hosts for it (GET /tools/{tool}/data), offered in the
+    # input row's own dropdown and downloaded on selection -- so every tool
+    # gets it, and no module declares anything. What was here instead was a
+    # per-module dict of hardcoded GitHub release URLs, which four modules had
+    # and eleven did not, and which the server knew nothing about.
 
     def __init__(self, parent=None):
         ScriptedLoadableModuleWidget.__init__(self, parent)
@@ -101,7 +113,12 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self._hiddenArgs = set()  # arguments whose `visible_when` is not satisfied
         self._statusBadge = None
         self._statusJob = None
-        self._downloadJob = None  # one test-data fetch at a time
+        self._downloadJob = None  # one test-file fetch at a time
+        # Where a downloaded test file lands, and what is already there.
+        # Created on first use and never in Documents: a 648 MB cohort a user
+        # clicked once must not still be on their disk next month.
+        self._testFileRoot = None
+        self._testFileCache = {}  # {hosted name: local path already fetched}
         self._sceneVolumes = {}  # {display name: vtkMRMLScalarVolumeNode}
         self._schemaError = None  # set while the panel could not be built from a schema
         self._rootLayout = None
@@ -520,22 +537,16 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
             field = widget
             widget.currentNodeChanged.connect(self._checkCanApply)
         else:
-            widget = formgen.file_widget(spec, mode, with_download=arg_name in self.TEST_DATA)
+            widget = formgen.file_widget(spec, mode)
             field = formgen.row_widget(widget)
             target.addRow(labelWidget, field)
             formgen.connect_changed(widget, self._checkCanApply)
-            button = formgen.download_button(widget)
-            if button is not None:
-                button.setToolTip(
-                    _("Download this tool's test data to your computer and use it as the input.")
-                )
-                button.clicked.connect(
-                    lambda checked=False, name=arg_name: self._onDownloadTestData(name)
-                )
-            elif arg_name in self.TEST_DATA:
-                logger.warning(
-                    "TEST_DATA declared for '%s' but its picker cannot host the button", arg_name
-                )
+            # Picking one of the tool's hosted test files is an action, not a
+            # value: this is where it lands, and the download that follows is
+            # why formgen hands the choice back instead of acting on it.
+            setter = getattr(widget, "setHostedCallback", None)
+            if setter is not None:
+                setter(lambda name, arg=arg_name: self._onHostedTestFile(arg, name))
 
         # Recorded like a scalar row so `visible_when` can hide a file input
         # too, and so a section holding only file inputs is not mistaken for an
@@ -579,11 +590,18 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
         fileInput = self._inputWidgets.get(arg_name)
 
         if fileInput is not None:
-            # A file input needs no "(automatic)" entry: it already leads with
-            # UPLOAD_OPTION, so it can express "nothing chosen here". The
-            # current selection surviving the refill lives inside the widget:
-            # its rebuild keeps the entry when the server still offers it.
-            fileInput.setChoices(choices)
+            # A file input needs no "(automatic)" entry: it leads with its own
+            # prompt, so it can express "nothing chosen here". The current
+            # selection surviving the refill lives inside the widget: its
+            # rebuild keeps the entry when the server still offers it.
+            #
+            # It is fed the ENTRIES, not the bare names: what a user needs
+            # before clicking a test file is whether it is one scan or a whole
+            # cohort and how many bytes that is. A model dropdown gets the
+            # names, because naming a model is all that ever travels for one.
+            fileInput.setChoices(
+                testfile_entries(data) if kind == "testfile" else choices
+            )
             return choices
 
         spec = (self._schema or {}).get("arguments", {}).get(arg_name, {})
@@ -732,16 +750,22 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
             and not (value == "" and not arguments.get(name, {}).get("required"))
         }
 
-        # A file argument satisfied from the server's own data store travels as
-        # a plain form value — its NAME — not as an upload, so it belongs here
-        # rather than in prepareInputFiles. The file itself never moves in
-        # either direction, which is the point for a hosted test cohort.
+        # A file argument satisfied by a hosted MODEL travels as a plain form
+        # value - its NAME - not as an upload, so it belongs here rather than
+        # in prepareInputFiles. The weights never move, which is the point.
+        #
+        # A hosted TEST FILE no longer appears here at all. It used to: the
+        # name travelled and the server read the file in place. It is
+        # downloaded now, so by the time a run starts it is an ordinary local
+        # file in `files` - which is what lets the user open the scan beside
+        # the panel, the whole reason for fetching it.
         collected.update(self._serverSideSelections())
         return collected
 
     def _serverSideSelections(self) -> dict:
-        """{argument name: server-side file name} for every input row where the
-        user picked a hosted file instead of one of their own."""
+        """{argument name: hosted name} for every input row whose selection is
+        sent as a name rather than uploaded - a model, never a test file (see
+        formgen.ServerFileInput.server_name)."""
         chosen = {}
         for arg_name, widget in self._inputWidgets.items():
             if arg_name in self._hiddenArgs:
@@ -780,8 +804,10 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
             return slicer_io.export_volume(
                 node, workspace.file(f"{self.TOOL_NAME}_{arg_name}.nii.gz")
             )
-        # Already satisfied by a file hosted on the server: nothing to upload.
-        # collectArgs sends its name instead (see _serverSideSelections).
+        # Already satisfied by a MODEL the server hosts: nothing to upload,
+        # collectArgs sends its name instead (see _serverSideSelections). A
+        # hosted test file never reaches this line - it was downloaded, and the
+        # row holds its local path.
         reader = getattr(widget, "server_name", None)
         if reader and reader():
             return None
@@ -892,8 +918,11 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 continue
             if widget is None:
                 return False
-            # A hosted file satisfies the argument just as well as a local one,
-            # and leaves currentPath empty on purpose (see ServerFileInput).
+            # A hosted MODEL satisfies the argument just as well as a local
+            # file, and leaves currentPath empty on purpose (see
+            # ServerFileInput). A hosted TEST FILE needs no clause of its own:
+            # it becomes a local path the moment its download lands, and until
+            # then Apply stays disabled, which is the honest state.
             reader = getattr(widget, "server_name", None)
             if reader and reader():
                 continue
@@ -1067,106 +1096,176 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self._checkCanApply()
 
     # ------------------------------------------------------------------
-    # Test data (the original modules' "Test Files" button, now inline)
+    # The tool's own test files, downloaded from the server on selection
     # ------------------------------------------------------------------
 
-    def _testDataRoot(self) -> str:
-        """~/Documents/<app>Downloads/<tool>/Test_Files, the same place the
-        original modules downloaded into."""
-        documents = qt.QStandardPaths.writableLocation(qt.QStandardPaths.DocumentsLocation)
-        return os.path.join(
-            documents, slicer.app.applicationName + "Downloads", self.TOOL_NAME, "Test_Files"
-        )
+    def _testFileDir(self) -> str:
+        """A directory for this session's downloaded test files, created once.
 
-    def _onDownloadTestData(self, arg_name: str) -> None:
-        """Fetch the argument's TEST_DATA payload and point the input at it.
-
-        Idempotent by destination directory, like the original DownloadUnzip:
-        a second click reuses what is already on disk. The transfer runs on a
-        BackgroundJob so a 100 MB scan cannot freeze the panel, with the
-        progress label reporting it (same channel as a tool run).
+        `slicer.util.tempDirectory()` and not ~/Documents: these are whole
+        cohorts (648 MB for the semi-automated CBCT set) and a user who clicked
+        a test file once to look at it has not asked to keep it. It also hands
+        back a NEW directory per call, which is why the first one is kept -- a
+        second pick of the same entry has to find the first one's bytes.
         """
-        url = self.TEST_DATA.get(arg_name)
+        if not self._testFileRoot:
+            self._testFileRoot = slicer.util.tempDirectory()
+        return self._testFileRoot
+
+    def _declaredKind(self, arg_name: str, name: str):
+        """"file", "folder" or None - what the server said this entry is.
+
+        Read on the MAIN thread and handed to the worker, never read from it:
+        it comes off a widget, and a widget belongs to the thread that built
+        it. None means the server published no `entries` at all, which is what
+        `_hostedKind`'s fallback is for.
+        """
         widget = self._inputWidgets.get(arg_name)
-        if not url or widget is None or self._downloadJob is not None:
+        reader = getattr(widget, "hosted_entries", None)
+        for entry in (reader() if reader else []):
+            if entry.get("name") == name:
+                kind = entry.get("kind")
+                return kind if kind in ("file", "folder") else None
+        return None
+
+    def _onHostedTestFile(self, arg_name: str, name: str) -> None:
+        """Download one of the tool's server-hosted test files and use it.
+
+        **On a BackgroundJob, always.** The panel used to reach a hosted test
+        file by NAME, which cost nothing because the file never moved; it is
+        fetched now, and fetching it on the main thread froze the whole Slicer
+        window for as long as it took -- measured at 21 minutes once. The
+        elapsed-time label is the same channel a tool run reports on.
+
+        Cached by name for the session: a second pick of the same entry reuses
+        what is on disk and issues no request at all, so flipping between two
+        test cohorts is free after the first of each.
+        """
+        widget = self._inputWidgets.get(arg_name)
+        if widget is None or not name:
             return
 
-        stem = os.path.basename(url.split("?")[0]).split(".")[0] or "test_data"
-        destination = os.path.join(self._testDataRoot(), stem)
+        cached = self._testFileCache.get(name)
+        if cached and os.path.exists(cached):
+            self._useTestFile(arg_name, name, cached)
+            return
+
+        if self._downloadJob is not None:
+            slicer.util.showStatusMessage(
+                _("Another test file is still downloading."), 5000
+            )
+            return
+
+        destination = os.path.join(self._testFileDir(), _safe_name(name))
         if os.path.exists(destination):
-            self._useTestData(arg_name, destination)
+            # A previous pick in this session that never made it into the
+            # cache (a rebuilt panel, another argument offering the same file).
+            self._useTestFile(arg_name, name, destination)
             return
 
-        button = formgen.download_button(widget)
-        if button is not None:
-            button.setEnabled(False)
+        declared = self._declaredKind(arg_name, name)
 
         def task(progress_cb):
-            return self._fetchTestData(url, destination, progress_cb)
+            return self._fetchTestFile(name, destination, declared, progress_cb)
 
         def finish():
             self._downloadJob = None
-            if button is not None:
-                button.setEnabled(True)
             self._hideProgress()
 
         def on_success(path):
             finish()
-            self._useTestData(arg_name, path)
+            self._useTestFile(arg_name, name, path)
 
         def on_error(exc):
             finish()
             slicer.util.errorDisplay(
-                _("Could not download the test data: {error}").format(error=exc)
+                _("Could not download the test file: {error}").format(error=exc)
             )
 
         self._downloadJob = BackgroundJob(
             task, on_success=on_success, on_error=on_error, on_progress=self._showPhase
         )
-        self._showPhase(_("Downloading test data..."))
+        self._showPhase(_("Downloading {name}...").format(name=name))
         self._downloadJob.start()
 
-    def _fetchTestData(self, url: str, destination: str, progress_cb) -> str:
-        """Worker-thread part: download, unpack if it is an archive, move into
-        place.
+    def _fetchTestFile(self, name: str, destination: str, declared, progress_cb) -> str:
+        """Worker-thread half: download, unpack a hosted folder, move into place.
 
         Staged in a sibling directory and renamed at the end, so a failed or
         interrupted download can never leave a half-extracted folder that the
-        existence check in _onDownloadTestData would mistake for a completed
-        one (the original DownloadUnzip had exactly that failure mode). Only a
-        real .zip is extracted; a bare .nii.gz test scan (ALI's, AMASSS's) is
-        kept as the file it is, where the original blindly called ZipFile on
-        it and raised.
+        existence check above would mistake for a completed one.
         """
         staging = destination + ".downloading"
         shutil.rmtree(staging, ignore_errors=True)
         os.makedirs(staging)
-        archive = os.path.join(staging, os.path.basename(url.split("?")[0]) or "test_data")
-        download_file(url, archive, progress_cb)
-        if slicer_io.is_extractable_archive(archive):
-            progress_cb(_("Unpacking the test data..."))
-            slicer_io.unzip_folder(archive, staging)
-            os.remove(archive)
-        os.rename(staging, destination)
+        try:
+            payload = os.path.join(staging, _safe_name(name))
+            self.client.download_testfile(self.TOOL_NAME, name, payload, progress_cb)
+
+            # A hosted FOLDER is zipped by the server on the way out (there
+            # being no other way to put a directory on a wire) and is unpacked
+            # here, so the input points at a directory the tool can walk. A
+            # hosted FILE that happens to be a .zip is left exactly as it is:
+            # it is the file, and unpacking it would hand the tool something
+            # the server never offered.
+            if self._hostedKind(name, declared, payload) == "folder":
+                progress_cb(_("Unpacking {name}...").format(name=name))
+                unpacked = os.path.join(staging, "unpacked")
+                slicer_io.unzip_folder(payload, unpacked)
+                os.rename(unpacked, destination)
+            else:
+                os.replace(payload, destination)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+        # Either way the answer is the same path: a file lands as itself and a
+        # folder as its unpacked directory, so nothing downstream has to ask
+        # which it was.
         return destination
 
-    def _useTestData(self, arg_name: str, destination: str) -> None:
-        """Point the input at the downloaded data: the single file it holds
-        when there is exactly one entry, the folder itself otherwise (a
-        cohort, a DICOM series, scans plus their landmarks)."""
-        path = destination
-        try:
-            entries = os.listdir(destination)
-        except OSError:
-            entries = []
-        if len(entries) == 1:
-            only = os.path.join(destination, entries[0])
-            if os.path.isfile(only):
-                path = only
+    @staticmethod
+    def _hostedKind(name: str, declared, payload: str) -> str:
+        """"file" or "folder" for a hosted entry.
+
+        The server says so outright when it publishes `entries`, which is the
+        normal case and the only one worth trusting. An older server publishes
+        names alone, and then the shape of what arrived has to answer: the
+        endpoint zips a folder and streams a file untouched, and a directory
+        name carries no extension -- so an extensionless name that really did
+        arrive as an archive was a directory. The bytes are sniffed rather than
+        the name, here and nowhere else: `is_extractable_archive` refuses to,
+        because a RESULT .xlsx is a zip container and must not be unpacked, but
+        that reasoning is exactly why the name alone cannot settle this one.
+        """
+        if declared in ("file", "folder"):
+            return declared
+        if not os.path.splitext(name)[1] and zipfile.is_zipfile(payload):
+            return "folder"
+        return "file"
+
+    def _useTestFile(self, arg_name: str, name: str, path: str) -> None:
+        """Point the input at the downloaded test file, and show it.
+
+        Order matters: the path is written FIRST and the scene load is a
+        courtesy after it. Loading is what the download is for -- a clinician
+        asked for this scan so they could look at it beside the panel -- but a
+        file Slicer's reader refuses is still a perfectly good input, so a
+        failed load is a log line and the run goes ahead (slicer_io.load_input
+        never raises).
+        """
+        self._testFileCache[name] = path
         widget = self._inputWidgets.get(arg_name)
         if widget is not None:
             formgen.set_local_path(widget, path)
-        slicer.util.showStatusMessage(_("Test data ready: {path}").format(path=path), 5000)
+        self._checkCanApply()
+
+        # A FOLDER is deliberately never loaded: a forty-patient cohort would
+        # put hundreds of nodes in the scene, which is worse than showing
+        # nothing at all.
+        if not os.path.isdir(path):
+            slicer_io.load_input(path)
+        slicer.util.showStatusMessage(
+            _("Test file ready: {path}").format(path=path), 5000
+        )
 
     # ------------------------------------------------------------------
     # Server status banner

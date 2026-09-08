@@ -83,10 +83,6 @@ class AutoMatrixWidget(ServerToolWidgetBase):
     # No RESULT_KIND: output_kind "files" is the input tree rebuilt, one moved
     # file per scan and matrix plus AutoMatrix_report.json, bundled into one
     # .zip and unpacked into the output folder the user picks.
-    #
-    # No TEST_DATA: the upstream module's only download is the Mirror matrix,
-    # which is a matrix rather than test data and is now named like any other
-    # file. There is no published scan/matrix pair to point at.
 
     # A cohort moved through four region matrices legitimately returns dozens
     # of files. Twelve is what AREG and GreedyReg use for the same kind of

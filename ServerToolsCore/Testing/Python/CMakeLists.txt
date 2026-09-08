@@ -32,6 +32,17 @@ add_test(
   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
   )
 
+# test_hosted_test_files.py: what happens when a user picks one of a tool's
+# server-hosted test files -- the download, the cache, the unpacking and what
+# reaches the scene. Same stubs plus a handful of slicer.util functions, and a
+# BackgroundJob stand-in running on a real thread, since "this must not block
+# the Slicer window" is the property under test.
+add_test(
+  NAME ServerToolsCore_test_hosted_test_files
+  COMMAND ${Python3_EXECUTABLE} -m unittest test_hosted_test_files
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+  )
+
 # test_joystick.py: the 2D pad's value/geometry logic under the same stubs.
 # Painting aside, the pad is plain arithmetic.
 add_test(

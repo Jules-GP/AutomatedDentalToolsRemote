@@ -78,8 +78,6 @@ class DOCShapeAXIWidget(ServerToolWidgetBase):
     # No RESULT_KIND: output_kind "files" is a prediction table plus one
     # GradCAM surface per case, bundled into one .zip and unpacked into the
     # output folder the user picks.
-    #
-    # No TEST_DATA: upstream ships no test-file button for this module.
 
     # A graded cohort returns one surface per case per grade. Twelve is what
     # AREG and GreedyReg use for the same kind of output.

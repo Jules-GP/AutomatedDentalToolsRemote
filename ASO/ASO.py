@@ -92,13 +92,6 @@ class ASOWidget(ServerToolWidgetBase):
     # No RESULT_KIND either: output_kind "files" is one oriented scan, its
     # landmarks and its transform per case, plus ASO_report.json, bundled into
     # one .zip and unpacked into the output folder the user picks.
-    #
-    # The original module's "Test Files" button, ported: the Semi-Automated
-    # CBCT payload (scans AND their landmark files), which is what the
-    # "Scan / Landmark Folder" input expects.
-    TEST_DATA = {
-        "input": "https://github.com/lucanchling/ASO_CBCT/releases/download/TestFiles/SemiAuto.zip"
-    }
     AUTO_UI = True
 
     # Loading is a courtesy for the single-case run: a cohort legitimately

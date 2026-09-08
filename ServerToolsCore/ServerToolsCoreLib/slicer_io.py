@@ -147,6 +147,54 @@ def unzip_folder(zip_path: str, dest_dir: str) -> str:
     return dest_dir
 
 
+# What a downloaded test file can be shown as, by extension. The point of
+# downloading a hosted test file rather than naming it is that the clinician
+# gets to LOOK at it beside the panel, so a single file is put in the scene as
+# soon as it lands. A FOLDER never is: a forty-patient cohort would flood the
+# scene, which is why base_widget asks the entry's `kind` first.
+#
+# Distinct from formgen._VOLUME_EXTENSIONS on purpose. That table answers "can
+# a volume already in the scene satisfy this argument"; this one answers "what
+# node type is this file", and it has to cover meshes, which no scene volume
+# could ever stand in for.
+_INPUT_LOAD_KINDS = (
+    ((".nii", ".nii.gz", ".nrrd", ".nrrd.gz", ".gipl", ".gipl.gz", ".mha", ".mhd"), "volume"),
+    ((".vtk", ".vtp", ".stl", ".obj", ".ply"), "model"),
+)
+
+
+def load_kind_for(path: str):
+    """"volume", "model", or None for a file with nothing to put in a scene
+    (a .zip, a .csv, a DICOM directory). Extension-based, longest match first
+    so `.nii.gz` never resolves as `.gz`."""
+    lowered = path.lower()
+    best, best_kind = "", None
+    for extensions, kind in _INPUT_LOAD_KINDS:
+        for extension in extensions:
+            if lowered.endswith(extension) and len(extension) > len(best):
+                best, best_kind = extension, kind
+    return best_kind
+
+
+def load_input(path: str):
+    """Show a downloaded input file in the scene, if it is something a scene
+    can hold. Returns the loaded node, or None when the file is not one.
+
+    **Never raises.** This is a courtesy - the input is already filled in and
+    the run works whether or not the scene shows anything - so a reader that
+    Slicer refuses (a mesh in a dialect its loader does not take, a truncated
+    volume) is a log line, not a failed pick.
+    """
+    kind = load_kind_for(path)
+    if kind is None:
+        return None
+    try:
+        return load_result(path, kind)
+    except Exception:  # noqa: BLE001 - a preview must never break the input
+        logger.warning("Could not load %s into the scene as a %s", os.path.basename(path), kind)
+        return None
+
+
 _LOADERS = {
     "segmentation": lambda path: slicer.util.loadSegmentation(path),
     # Labelled VOXELS, kept as voxels. A segmentation node builds a closed

@@ -99,14 +99,6 @@ class ALIWidget(ServerToolWidgetBase):
     # was given is read off the path at upload time, never asked.
     FILE_INPUTS = {"input": "file_or_folder"}
 
-    # The original module's "Download Test file" button, ported: the same test
-    # scan it fetched, hosted on the original extension's GitHub releases.
-    # Complements the server-hosted testfiles dropdown, which never travels;
-    # this one puts a copy on the user's own disk.
-    TEST_DATA = {
-        "input": "https://github.com/Maxlo24/AMASSS_CBCT/releases/download/v1.0.1/MG_test_scan.nii.gz"
-    }
-
     # RESULT_KIND is deliberately absent: output_kind is "files", which can
     # only mean "save the archive", and formgen.result_kind_for derives it.
 

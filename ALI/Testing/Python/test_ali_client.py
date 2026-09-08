@@ -499,41 +499,67 @@ class TestInputPicker(unittest.TestCase):
 
 
 class TestServerSideInput(unittest.TestCase):
-    """`input` is `server_selectable: "testfile"`: the user may name a scan the
-    server already hosts instead of uploading one."""
+    """`input` is `server_selectable: "testfile"`: the tool's own test scans
+    are offered in the input row, and picking one downloads it."""
 
     def setUp(self):
         self.widget = formgen.file_widget(_argument("input"), "file_or_folder")
-        self.widget.setChoices(["MG_test_scan.nii.gz", "cohort_10_patients.zip"])
+        self.widget.setChoices([
+            {"name": "MG_test_scan.nii.gz", "kind": "file", "size": 98 * 1024 * 1024},
+            {"name": "cohort_10_patients.zip", "kind": "file", "size": None},
+        ])
+        self.downloaded = []
+        self.widget.setHostedCallback(self.downloaded.append)
 
-    def test_upload_stays_the_first_and_default_option(self):
-        self.assertEqual(self.widget.combo.itemText(0), formgen.ServerFileInput.UPLOAD_OPTION)
+    def test_the_prompt_leads_and_names_nothing(self):
+        self.assertEqual(
+            self.widget.combo.itemText(0), formgen.ServerFileInput.CHOOSE_OPTION
+        )
         self.assertEqual(self.widget.combo.count, 3)
-        self.assertEqual(self.widget.server_name(), "")
+        self.assertEqual(self.widget.hosted_name(), "")
+        self.assertEqual(self.widget.currentPath, "")
 
-    def test_choosing_a_hosted_file_uploads_nothing(self):
-        self.widget.combo.setCurrentText("MG_test_scan.nii.gz")
-        self.assertEqual(self.widget.server_name(), "MG_test_scan.nii.gz")
-        # Empty on purpose: prepareInputFiles has nothing to send, the name
-        # travels as a plain form value instead.
+    def test_each_test_file_says_what_it_is_and_what_it_costs(self):
+        self.assertEqual(self.widget.combo.itemText(1), "MG_test_scan.nii.gz  (file, 98 MB)")
+        # The server could not size the second one; a size it did not state is
+        # left out rather than rendered as "0 B".
+        self.assertEqual(self.widget.combo.itemText(2), "cohort_10_patients.zip  (file)")
+
+    def test_choosing_a_test_file_asks_for_it_to_be_downloaded(self):
+        self.widget.combo.setCurrentIndex(1)
+
+        self.assertEqual(self.downloaded, ["MG_test_scan.nii.gz"])
+        # Nothing to upload until the bytes land, which is the honest state:
+        # Apply stays disabled while the download runs.
         self.assertEqual(self.widget.currentPath, "")
 
     def test_the_two_halves_are_mutually_exclusive_and_visibly_so(self):
-        self.widget.combo.setCurrentText("MG_test_scan.nii.gz")
+        self.widget.combo.setCurrentIndex(1)
         self.widget.local.pathEdit.setText("/data/my_own_scan.nii.gz")
         # Picking a local file resets the dropdown rather than losing to it:
         # a precedence rule the user cannot see is how you end up sending the
         # file you thought you had replaced.
-        self.assertEqual(self.widget.server_name(), "")
+        self.assertEqual(self.widget.hosted_name(), "")
         self.assertEqual(self.widget.currentPath, "/data/my_own_scan.nii.gz")
 
-        self.widget.combo.setCurrentText("cohort_10_patients.zip")
+        self.widget.combo.setCurrentIndex(2)
         self.assertEqual(self.widget.currentPath, "")
         self.assertEqual(self.widget.local.currentPath, "")
 
-    def test_a_hosted_name_satisfies_the_required_file_argument(self):
-        # Client-side validation runs before the round trip; requiring an
-        # upload here would reject the shape the server explicitly supports.
+    def test_a_downloaded_test_file_is_an_ordinary_upload(self):
+        """The wire shape changed with the mechanism: the name used to travel
+        as a form value and the server read the file in place. It is on the
+        user's disk now, so it goes up like any other local file."""
+        ToolServerClient._validate_against_schema(
+            ALI_SCHEMA,
+            {"model": "ALI_CBCT_v2"},
+            {"input": "/tmp/session/MG_test_scan.nii.gz"},
+        )
+
+    def test_a_hosted_name_is_still_accepted_by_the_validator(self):
+        # The server supports both shapes and this client no longer sends the
+        # second; rejecting it here would make the validator stricter than the
+        # thing it mirrors.
         ToolServerClient._validate_against_schema(
             ALI_SCHEMA, {"model": "ALI_CBCT_v2", "input": "MG_test_scan.nii.gz"}, {}
         )

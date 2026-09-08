@@ -82,17 +82,52 @@ BROWSE_FILE_LABEL = "File..."
 BROWSE_FOLDER_LABEL = "Folder..."
 PATH_PLACEHOLDER = "Select a file or a folder"
 
-# The one-click test-data button at the end of an input row (the original
-# extension's "Test Files" / "Download Test file" buttons, now inline). The
-# button is only built when the module declares a URL for the argument
-# (base_widget.TEST_DATA); the download itself lives in base_widget, this
-# module never talks HTTP.
-DOWNLOAD_LABEL = "Test data"
-
-# How a volume already open in the scene appears in the input dropdown, next
-# to the server-hosted names. Selection kind is decided by index, never by
+# How a volume already open in the scene appears in the input dropdown, below
+# the server-hosted test files. Selection kind is decided by index, never by
 # parsing this prefix back (see ServerFileInput._selection).
 OPEN_VOLUME_PREFIX = "Open volume: "
+
+# 1024-based, like every other size this extension prints (transfer._Meter,
+# client._download_message). A test file is a download the user is about to
+# pay for, and "648 MB" is the only form of 679477248 that says so.
+_SIZE_UNITS = ("B", "KB", "MB", "GB", "TB")
+
+
+def human_size(size) -> str:
+    """"2.9 KB", "7.4 MB", "648 MB" - and "" when the size is unknown.
+
+    A `size` the server could not compute arrives as `null`, and rendering
+    that as "0 B" would be a claim rather than a gap: the picker shows the
+    name alone instead. A genuinely empty entry reads the same way, which is
+    the harmless half of the same rule.
+    """
+    if not isinstance(size, (int, float)) or isinstance(size, bool) or size <= 0:
+        return ""
+    value = float(size)
+    unit = _SIZE_UNITS[0]
+    for unit in _SIZE_UNITS:
+        if value < 1024 or unit == _SIZE_UNITS[-1]:
+            break
+        value /= 1024
+    if unit == "B" or value >= 10:
+        return f"{round(value)} {unit}"
+    # One decimal below 10, where dropping it would round 2.9 KB to "3 KB".
+    return f"{value:.1f} {unit}"
+
+
+def hosted_entry_label(entry: dict) -> str:
+    """How one server-hosted test file reads in the input dropdown:
+    "CBCT_FullyAuto  (folder, 339 MB)".
+
+    The name alone is what the dropdown used to show, and it hides both things
+    a user needs before clicking: whether this is one scan or a whole cohort,
+    and how many bytes are about to cross the link. Either may be unknown (an
+    older server, or a backend that cannot size a tree cheaply) and is simply
+    left out - an entry that says nothing extra still reads as its own name.
+    """
+    name = entry.get("name", "")
+    details = [detail for detail in (entry.get("kind"), human_size(entry.get("size"))) if detail]
+    return f"{name}  ({', '.join(details)})" if details else name
 
 # Extensions Slicer holds as a scalar volume in the scene. A file argument
 # accepting one of these can equally be satisfied by a volume the user already
@@ -519,7 +554,7 @@ class FileOrFolderInput:
     observable.
     """
 
-    def __init__(self, extensions=(), with_download=False):
+    def __init__(self, extensions=()):
         self._extensions = tuple(extensions)
 
         self.container = qt.QWidget()
@@ -534,13 +569,6 @@ class FileOrFolderInput:
         row_layout.addWidget(self.pathEdit, 1)
         row_layout.addWidget(self.fileButton)
         row_layout.addWidget(self.folderButton)
-
-        # Built here so the whole input, test-data button included, stays one
-        # line; base_widget connects it (the download itself is HTTP).
-        self.downloadButton = None
-        if with_download:
-            self.downloadButton = design.compact_button(DOWNLOAD_LABEL)
-            row_layout.addWidget(self.downloadButton)
 
         self.fileButton.clicked.connect(self._onBrowseFile)
         self.folderButton.clicked.connect(self._onBrowseFolder)
@@ -580,33 +608,44 @@ class FileOrFolderInput:
 
 class ServerFileInput:
     """One input row for a file argument that can be satisfied three ways: a
-    local file or folder to upload, a file the SERVER already hosts by name
-    (`server_selectable`, e.g. ALI's and AMASSS's `input`), or a scalar
-    volume already OPEN in the scene (any argument `accepts_volume` says yes
-    to).
+    local file or folder to upload, one of the TEST FILES the server hosts for
+    this tool, or a scalar volume already OPEN in the scene (any argument
+    `accepts_volume` says yes to).
 
-    Everything sits on ONE line, [sources dropdown][local picker][test data],
-    matching the original modules where each input is a single row.
+    Everything sits on ONE line, [sources dropdown][path field + browse], and
+    the dropdown is the single place a tool's test data is reached from. There
+    used to be two: this list, which sent the hosted NAME and left the file on
+    the server, and a separate "Test data" button fetching a hardcoded GitHub
+    release URL four modules declared by hand. They answered the same question
+    differently, and only one of them put the scan where a clinician could
+    open it beside the panel.
 
-    The dropdown's entries, in order: the upload entry, the open volumes
-    (fed by base_widget; formgen never touches the MRML scene), then the
-    server-hosted names (`GET /tools/<tool>/data`). Which kind is selected is
-    decided by INDEX (`_selection`), never by parsing the text back, so a
-    hosted file whose name happens to start with the volume prefix cannot be
-    misread.
+    The dropdown's entries, in order: the prompt, the hosted test files (each
+    labelled with its kind and size, see `hosted_entry_label`), then the open
+    volumes (fed by base_widget; formgen never touches the MRML scene). Which
+    kind is selected is decided by INDEX (`_selection`), never by parsing the
+    text back, so a hosted file whose name happens to start with the volume
+    prefix cannot be misread.
 
-    On the wire the three are genuinely different: an upload is a multipart
-    file part, a server-side selection is a plain form value under the
-    argument's own name (the named file never travels in either direction,
-    which is the whole point for a test cohort of confidential scans), and an
-    open volume is exported to disk at upload time and sent like a local file
-    (base_widget._prepareOneInputFile).
+    **Picking a hosted TEST FILE is an action, not a state.** It hands the name
+    to the callback base_widget registers (`setHostedCallback`), which
+    downloads the file and writes the local path back through `set_local_path`
+    - at which point the row holds an ordinary local path like any other, the
+    combo returns to its prompt, and the run uploads it. Nothing travels as a
+    bare name: the file the user asked to see is on their disk, and a file on
+    disk is uploaded.
+
+    Two entries are still a state, for the same reason - there is no local path
+    to write. An OPEN VOLUME is exported at upload time
+    (base_widget._prepareOneInputFile). A hosted MODEL (`hosted_downloads`
+    False, ASO's `reference`) is not downloadable at all - the server declines
+    to stream weights, which are selected by name and used in place - so it is
+    read back by `server_name()` and sent as a plain form value.
 
     The sources are kept mutually exclusive by clearing the other one, not by
-    letting one silently win: picking a dropdown entry empties the path
-    field, and typing/browsing a path resets the dropdown. A precedence rule
-    the user cannot see is how you end up uploading a file you thought you
-    had replaced.
+    letting one silently win: picking a dropdown entry empties the path field,
+    and typing/browsing a path resets the dropdown. A precedence rule the user
+    cannot see is how you end up uploading a file you thought you had replaced.
 
     Rebuilding the dropdown (`setChoices`/`setVolumeChoices`) preserves the
     current selection by text when it is still offered: both lists are
@@ -614,15 +653,24 @@ class ServerFileInput:
     chosen entry to the first one in the list.
     """
 
-    # First entry, and the one that means "nothing chosen here": a combo box
-    # cannot express "nothing selected" in a way a user reads as deliberate.
-    UPLOAD_OPTION = "Upload my own file..."
+    # First entry, and the state that means "nothing picked FROM THIS LIST":
+    # a combo box cannot express an empty selection in a way a user reads as
+    # deliberate. It is deliberately the same words as the path field's own
+    # placeholder - one affordance, one prompt - and it is not a source. What
+    # says whether the argument has been given anything is the path field.
+    CHOOSE_OPTION = PATH_PLACEHOLDER
 
-    def __init__(self, local, with_download=False):
+    def __init__(self, local, hosted_downloads=True, on_hosted=None):
         self.local = local
         self._syncing = False
-        self._server_names = []
+        self._hosted = []  # [{"name", "kind", "size"}], in server order
         self._volume_names = []
+        # Whether picking a hosted entry FETCHES it. True for the tool's test
+        # files, which exist to be looked at. False for a hosted MODEL: the
+        # server refuses to stream one on purpose (weights are selected by name
+        # and used in place), so for those the name is still what travels.
+        self.hosted_downloads = bool(hosted_downloads)
+        self._on_hosted = on_hosted
 
         self.container = qt.QWidget()
         row = qt.QHBoxLayout(self.container)
@@ -630,29 +678,34 @@ class ServerFileInput:
         row.setSpacing(design.SPACING_XS)
 
         self.combo = qt.QComboBox()
-        # Without this a long hosted name (cohort_10_patients.zip) widens the
-        # dropdown until the path field has no room left on the line.
+        # Without this a long hosted entry (cohort_10_patients.zip  (file,
+        # 94 MB)) widens the dropdown until the path field has no room left on
+        # the line.
         self.combo.sizeAdjustPolicy = qt.QComboBox.AdjustToMinimumContentsLengthWithIcon
         self.combo.minimumContentsLength = 14
-        self.combo.addItems([self.UPLOAD_OPTION])
+        self.combo.addItems([self.CHOOSE_OPTION])
         row.addWidget(self.combo)
         row.addWidget(row_widget(local), 1)
-
-        # Built here so the whole input, test-data button included, stays one
-        # line; base_widget connects it (the download itself is HTTP).
-        self.downloadButton = None
-        if with_download:
-            self.downloadButton = design.compact_button(DOWNLOAD_LABEL)
-            row.addWidget(self.downloadButton)
 
         self.combo.currentTextChanged.connect(self._onComboChoice)
         connect_changed(local, self._onLocalChoice)
 
-    def setChoices(self, names) -> None:
-        """Fill the dropdown with the server-hosted names. Called once the
-        schema is known and again on every enter(); formgen never talks HTTP
-        (see ARCHITECTURE.md dependency rule)."""
-        self._server_names = list(names)
+    def setHostedCallback(self, callback) -> None:
+        """What to do when the user picks a hosted test file: base_widget
+        downloads it and writes the resulting local path back here. Registered
+        rather than called directly because the download is HTTP, and this
+        module does not speak it (see ARCHITECTURE.md dependency rule)."""
+        self._on_hosted = callback
+
+    def setChoices(self, entries) -> None:
+        """Fill the dropdown with the server-hosted test files. Called once the
+        schema is known and again on every enter(); formgen never talks HTTP.
+
+        Takes either the normalised entries (`client.testfile_entries`) or bare
+        names, so a caller that only has names - and every test that only cares
+        about order - needs no ceremony.
+        """
+        self._hosted = [_hosted_entry(entry) for entry in entries]
         self._rebuild()
 
     def setVolumeChoices(self, names) -> None:
@@ -662,16 +715,28 @@ class ServerFileInput:
         self._volume_names = list(names)
         self._rebuild()
 
+    def hosted_entries(self) -> list:
+        """The hosted test files currently offered, as the entries they were
+        set from - base_widget reads `kind` off this to decide whether the
+        download is unpacked and whether it is loaded into the scene."""
+        return list(self._hosted)
+
+    def _entries(self) -> list:
+        return (
+            [self.CHOOSE_OPTION]
+            + [hosted_entry_label(entry) for entry in self._hosted]
+            + [OPEN_VOLUME_PREFIX + name for name in self._volume_names]
+        )
+
     def _rebuild(self) -> None:
         previous = self.combo.currentText
         # Guarded: clear()+addItems reselects index 0, which would otherwise
-        # run the mutual-exclusion sync for a choice the user never made.
+        # run the mutual-exclusion sync for a choice the user never made -- and
+        # for a hosted entry, would start a download nobody asked for.
         self._syncing = True
         try:
             self.combo.clear()
-            entries = [self.UPLOAD_OPTION]
-            entries += [OPEN_VOLUME_PREFIX + name for name in self._volume_names]
-            entries += self._server_names
+            entries = self._entries()
             self.combo.addItems(entries)
             if previous in entries:
                 self.combo.setCurrentIndex(entries.index(previous))
@@ -679,22 +744,38 @@ class ServerFileInput:
             self._syncing = False
 
     def _selection(self):
-        """("upload" | "volume" | "server", name) for the current entry,
-        decided by index so no name can be misparsed."""
+        """("none" | "hosted" | "volume", name) for the current entry, decided
+        by index so no name can be misparsed."""
         index = self.combo.currentIndex
         if index <= 0:
-            return "upload", ""
-        if index <= len(self._volume_names):
-            return "volume", self._volume_names[index - 1]
-        server_index = index - 1 - len(self._volume_names)
-        if server_index < len(self._server_names):
-            return "server", self._server_names[server_index]
-        return "upload", ""
+            return "none", ""
+        if index <= len(self._hosted):
+            return "hosted", self._hosted[index - 1]["name"]
+        volume_index = index - 1 - len(self._hosted)
+        if volume_index < len(self._volume_names):
+            return "volume", self._volume_names[volume_index]
+        return "none", ""
+
+    def hosted_name(self) -> str:
+        """The hosted entry currently showing in the dropdown, or "".
+
+        For a downloadable one (a test file) this is only non-empty between the
+        pick and the moment the download hands back a path -- which resets the
+        dropdown -- so it is progress feedback rather than a value.
+        """
+        kind, name = self._selection()
+        return name if kind == "hosted" else ""
 
     def server_name(self) -> str:
-        """The chosen server-side file name, or "" otherwise."""
-        kind, name = self._selection()
-        return name if kind == "server" else ""
+        """The hosted name that TRAVELS to the server as a plain form value,
+        or "".
+
+        Only a MODEL does. A model is never downloadable -- the weights stay
+        where they are and the run names them -- so that selection is a value
+        the way it always was. A test file is fetched instead and becomes an
+        ordinary local path, which is why it answers "" here.
+        """
+        return "" if self.hosted_downloads else self.hosted_name()
 
     def volume_name(self) -> str:
         """The chosen open volume's display name, or "" otherwise."""
@@ -703,10 +784,11 @@ class ServerFileInput:
 
     @property
     def currentPath(self) -> str:
-        """The LOCAL path to upload: empty while a server file or an open
-        volume is chosen, so nothing is read off disk for an argument that is
-        already satisfied another way."""
-        if self.server_name() or self.volume_name():
+        """The LOCAL path to upload: empty while an open volume or a hosted
+        model is chosen, so nothing is read off disk for an argument that is
+        already satisfied another way. A downloaded test file IS an ordinary
+        local path and reads back here like one."""
+        if self.volume_name() or self.server_name():
             return ""
         return _local_path(self.local)
 
@@ -715,13 +797,21 @@ class ServerFileInput:
         return bool(checker()) if checker else False
 
     def _onComboChoice(self, _text=None) -> None:
-        if self._syncing or self.combo.currentIndex <= 0:
+        if self._syncing:
             return
+        kind, name = self._selection()
+        if kind == "none":
+            return
+        # Whatever was in the path field is not what the user just asked for.
+        # Cleared before the download starts, not after it lands, so a run
+        # launched mid-download cannot send the previous file.
         self._syncing = True
         try:
             _set_local_path(self.local, "")
         finally:
             self._syncing = False
+        if kind == "hosted" and self.hosted_downloads and self._on_hosted is not None:
+            self._on_hosted(name)
 
     def _onLocalChoice(self, *_args) -> None:
         if self._syncing or not _local_path(self.local):
@@ -741,17 +831,21 @@ class ServerFileInput:
         self.container.setToolTip(text)
 
 
-def download_button(widget):
-    """The row's test-data button, wherever the composite put it, or None."""
-    button = getattr(widget, "downloadButton", None)
-    if button is not None:
-        return button
-    return getattr(getattr(widget, "local", None), "downloadButton", None)
+def _hosted_entry(entry) -> dict:
+    """One dropdown entry, from either shape a caller may hold: the normalised
+    `{"name", "kind", "size"}` of `client.testfile_entries`, or a bare name."""
+    if isinstance(entry, dict):
+        return {
+            "name": entry.get("name", ""),
+            "kind": entry.get("kind"),
+            "size": entry.get("size"),
+        }
+    return {"name": str(entry), "kind": None, "size": None}
 
 
 def set_local_path(widget, value: str) -> None:
     """Write a local path into any input-row kind: what base_widget fills in
-    once the test data has been downloaded. Writing the local half of a
+    once a hosted test file has been downloaded. Writing the local half of a
     ServerFileInput also resets its dropdown, through its own sync."""
     target = widget.local if isinstance(widget, ServerFileInput) else widget
     _set_local_path(target, value)
@@ -1213,14 +1307,10 @@ def result_kind_for(output_kind, declared=None) -> str:
     return declared or _RESULT_KIND_FOR_OUTPUT.get(output_kind, "text")
 
 
-def file_widget(spec: dict, mode: str = "auto", with_download: bool = False):
+def file_widget(spec: dict, mode: str = "auto"):
     """The picker for a file argument. `mode` defaults to the schema-driven
     rule above; base_widget passes an explicit one for what the schema cannot
     express (or to force a single selection kind).
-
-    `with_download` adds the inline test-data button: the module declared a
-    TEST_DATA URL for this argument. The button is created here so the row
-    stays one line; base_widget wires it (the download itself is HTTP).
 
     Kept here (rather than in base_widget) so every "schema shape -> Qt
     widget" decision lives in one file; `build()` itself never emits one (see
@@ -1229,27 +1319,21 @@ def file_widget(spec: dict, mode: str = "auto", with_download: bool = False):
     if mode == "auto":
         mode = auto_file_mode(spec)
 
-    # One dropdown serves both extra sources: a file the server can provide
-    # by name (server_selectable), and a volume already open in the scene
-    # (accepts_volume). Only file-typed arguments reach here: a SCALAR
+    # One dropdown serves both extra sources: the test files the server hosts
+    # for this tool (server_selectable), and a volume already open in the
+    # scene (accepts_volume). Only file-typed arguments reach here: a SCALAR
     # server_selectable argument (a model, which must never leave the server)
     # is a plain combo box built by _make_widget, with no local picker at all.
     wrap = bool(spec.get("server_selectable")) or accepts_volume(spec)
 
     extensions = file_extensions_for(spec)
-    if mode == "file_or_folder":
-        local = FileOrFolderInput(extensions, with_download=with_download and not wrap)
-    else:
-        local = path_widget(extensions, mode)
-        if with_download and not wrap:
-            logger.warning(
-                "Test data declared for an argument whose bare path picker "
-                "cannot host the button; ignoring"
-            )
-
-    if wrap:
-        return ServerFileInput(local, with_download=with_download)
-    return local
+    local = FileOrFolderInput(extensions) if mode == "file_or_folder" else path_widget(extensions, mode)
+    if not wrap:
+        return local
+    # A hosted MODEL is not downloadable and never was: the server declines to
+    # stream one, so its name travels and the weights stay put. Only the tool's
+    # TEST FILES are fetched on selection.
+    return ServerFileInput(local, hosted_downloads=spec.get("server_selectable") != "model")
 
 
 def _choices(name: str, spec: dict) -> dict:
