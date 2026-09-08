@@ -567,11 +567,6 @@ class SafeNameTest(unittest.TestCase):
         self.assertEqual(base_widget._safe_name("a/b.nii.gz"), "b.nii.gz")
         self.assertEqual(base_widget._safe_name(".."), "test_file")
 
-
-if __name__ == "__main__":
-    unittest.main()
-
-
 class LoadingPhaseIsSaidOutLoudTest(HostedTestFileTest):
     """A user reported "the download takes more than 20 seconds". It does not:
     fetching a 94 MB scan over ranged parts is 0.3 s, measured against curl's
@@ -818,3 +813,7 @@ class NothingIsLeftBehindTest(HostedTestFileTest):
     def test_cleanup_without_a_single_download_is_harmless(self):
         self.panel.cleanup()
         self.assertIsNone(self.panel._testFileRoot)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1641,11 +1641,6 @@ class DownloadTestFileTest(unittest.TestCase):
 
         ranged.assert_not_called()
 
-
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ToolNameSpellingTest(unittest.TestCase):
     """A rename that only moved separators must not read as a missing tool.
 
@@ -1669,3 +1664,7 @@ class ToolNameSpellingTest(unittest.TestCase):
             self.client.get_tool_schema("AREG")
         self.assertIn("Unknown tool 'AREG'", str(caught.exception))
         self.assertIn("Surg_Mov_Pred", str(caught.exception))
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -725,11 +725,6 @@ class ResultDiscoveryTest(unittest.TestCase):
         self._write("CB/P1_CB_Reg.nii.gz")
         self.assertEqual(len(AREGWidget._findResults(self.dir)), 1)
 
-
-if __name__ == "__main__":
-    unittest.main()
-
-
 # ---------------------------------------------------------------------------
 # What Apply waits for
 # ---------------------------------------------------------------------------
@@ -901,3 +896,7 @@ class PrepareInputFilesTest(unittest.TestCase):
         files = self.panel.prepareInputFiles(self.workspace)
         self.assertEqual(sorted(files), ["mgl_landmarks", "t1", "t2"])
         self.assertTrue(all(os.path.exists(path) for path in files.values()))
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1301,11 +1301,6 @@ class JoystickWidgetTest(unittest.TestCase):
         widgets = formgen.build(schema, qt.QFormLayout())
         self.assertTrue(formgen.all_required_filled(widgets, schema))
 
-
-if __name__ == "__main__":
-    unittest.main()
-
-
 class HostedEntryReadabilityTest(unittest.TestCase):
     """A hosted entry has to be readable in the popup, whatever the collapsed
     box's width. Elided, `CBCT_Or_FullyAuto_DCM (folder, 532 MB)` and
@@ -1353,3 +1348,7 @@ class HostedEntryReadabilityTest(unittest.TestCase):
         entry = [e for e in widget._entries() if "CBCT_FullyAuto" in e][0]
         self.assertIn("folder", entry)
         self.assertIn("339", entry)
+
+
+if __name__ == "__main__":
+    unittest.main()
