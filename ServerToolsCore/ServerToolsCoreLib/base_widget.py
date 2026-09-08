@@ -1262,7 +1262,15 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # put hundreds of nodes in the scene, which is worse than showing
         # nothing at all.
         if not os.path.isdir(path):
+            # Said out loud, because this is the slow half and it does not look
+            # like it: fetching a 94 MB scan takes 0.3 s over ranged parts,
+            # then Slicer spends twenty seconds decompressing it and building
+            # the image. A progress line still reading "Downloading..." while
+            # that happens makes a fast transfer look like a stalled one.
+            self._showPhase(_("Loading {name} into the scene...").format(name=name))
+            slicer.app.processEvents()
             slicer_io.load_input(path)
+        self._hideProgress()
         slicer.util.showStatusMessage(
             _("Test file ready: {path}").format(path=path), 5000
         )

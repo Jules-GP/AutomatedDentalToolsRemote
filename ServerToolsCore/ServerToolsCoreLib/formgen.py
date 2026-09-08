@@ -82,6 +82,10 @@ BROWSE_FILE_LABEL = "File..."
 BROWSE_FOLDER_LABEL = "Folder..."
 PATH_PLACEHOLDER = "Select a file or a folder"
 
+# Room for the scroll bar and the item margins, so the widest entry is not
+# elided by a pixel.
+_POPUP_PADDING = 40
+
 # How a volume already open in the scene appears in the input dropdown, below
 # the server-hosted test files. Selection kind is decided by index, never by
 # parsing this prefix back (see ServerFileInput._selection).
@@ -681,8 +685,16 @@ class ServerFileInput:
         # Without this a long hosted entry (cohort_10_patients.zip  (file,
         # 94 MB)) widens the dropdown until the path field has no room left on
         # the line.
+        # The COLLAPSED box stays narrow, so a long hosted name cannot widen
+        # the row until the path field has no room left on the line. The POPUP
+        # is a different question: a clinician choosing between
+        # `CBCT_Or_FullyAuto_DCM (folder, 532 MB)` and
+        # `CBCT_FullyAuto_DCM (folder, 183 MB)` has to read the whole entry --
+        # truncated, the two are the same word. `_widenPopup` sizes the list to
+        # its longest entry on every rebuild.
         self.combo.sizeAdjustPolicy = qt.QComboBox.AdjustToMinimumContentsLengthWithIcon
         self.combo.minimumContentsLength = 14
+        self.combo.setToolTip(PATH_PLACEHOLDER)
         self.combo.addItems([self.CHOOSE_OPTION])
         row.addWidget(self.combo)
         row.addWidget(row_widget(local), 1)
@@ -740,8 +752,27 @@ class ServerFileInput:
             self.combo.addItems(entries)
             if previous in entries:
                 self.combo.setCurrentIndex(entries.index(previous))
+            self._widenPopup(entries)
         finally:
             self._syncing = False
+
+    def _widenPopup(self, entries) -> None:
+        """Let the dropdown LIST show a whole entry, however narrow the box is.
+
+        `CBCT_Or_FullyAuto_DCM (folder, 532 MB)` elided to the collapsed box's
+        width reads as `CBCT_Or_Full...`, which is the same text as three of
+        its neighbours -- so the one thing the entry exists to say, what it is
+        and what it costs, is the part that gets cut. Every failure Qt can have
+        here is cosmetic, so none of them may take the panel down with it.
+        """
+        try:
+            view = self.combo.view()
+            metrics = self.combo.fontMetrics
+            widest = max((metrics.horizontalAdvance(entry) for entry in entries), default=0)
+            if widest:
+                view.setMinimumWidth(widest + _POPUP_PADDING)
+        except Exception:  # noqa: BLE001 - a dropdown that is merely narrow
+            logger.debug("could not widen the hosted-entry popup", exc_info=True)
 
     def _selection(self):
         """("none" | "hosted" | "volume", name) for the current entry, decided

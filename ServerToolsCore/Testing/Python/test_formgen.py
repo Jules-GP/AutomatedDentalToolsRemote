@@ -1304,3 +1304,52 @@ class JoystickWidgetTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HostedEntryReadabilityTest(unittest.TestCase):
+    """A hosted entry has to be readable in the popup, whatever the collapsed
+    box's width. Elided, `CBCT_Or_FullyAuto_DCM (folder, 532 MB)` and
+    `CBCT_Or_FullyAuto (folder, 267 MB)` are the same text -- and what gets cut
+    is exactly what the entry exists to say."""
+
+    def _input(self, hosted):
+        widget = formgen.ServerFileInput(qt.QLineEdit())
+        widget.setChoices(hosted)
+        return widget
+
+    def test_the_popup_is_widened_to_its_longest_entry(self):
+        widget = self._input([
+            {"name": "a.nii.gz", "kind": "file", "size": 1},
+            {"name": "CBCT_Or_FullyAuto_DCM", "kind": "folder", "size": 532 * 1024 ** 2},
+        ])
+
+        longest = max(len(entry) for entry in widget._entries())
+        self.assertGreaterEqual(widget.combo.view().minimumWidth, longest)
+
+    def test_the_collapsed_box_stays_narrow(self):
+        """The row still has to fit: only the LIST grows."""
+        widget = self._input([{"name": "x" * 120, "kind": "file", "size": 1}])
+
+        self.assertEqual(widget.combo.minimumContentsLength, 14)
+
+    def test_widening_survives_a_toolkit_that_cannot_do_it(self):
+        """Every failure here is cosmetic, so none of them may take the panel
+        down with it."""
+        widget = self._input([{"name": "a.nii.gz", "kind": "file", "size": 1}])
+
+        def explode():
+            raise RuntimeError("no view in this build")
+
+        widget.combo.view = explode
+        widget.setChoices([{"name": "b.nii.gz", "kind": "file", "size": 2}])
+
+        self.assertIn("b.nii.gz", " ".join(widget._entries()))
+
+    def test_an_entry_says_what_it_is_and_what_it_costs(self):
+        widget = self._input([
+            {"name": "CBCT_FullyAuto", "kind": "folder", "size": 339 * 1024 ** 2},
+        ])
+
+        entry = [e for e in widget._entries() if "CBCT_FullyAuto" in e][0]
+        self.assertIn("folder", entry)
+        self.assertIn("339", entry)

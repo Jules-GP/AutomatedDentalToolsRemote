@@ -264,6 +264,26 @@ class QCheckBox(QObject):
         return self._checked
 
 
+class _ListView:
+    """Just enough of the popup for `_widenPopup`: it sets a minimum width and
+    nothing here reads it back but the tests."""
+
+    def __init__(self):
+        self.minimumWidth = 0
+
+    def setMinimumWidth(self, width):
+        self.minimumWidth = width
+
+
+class _FontMetrics:
+    """One pixel per character. Real metrics are proportional, but the
+    property under test is "the widest entry decides", not the exact pixels."""
+
+    @staticmethod
+    def horizontalAdvance(text):
+        return len(text)
+
+
 class QComboBox(QObject):
     AdjustToMinimumContentsLengthWithIcon = 2
 
@@ -274,8 +294,13 @@ class QComboBox(QObject):
         self._index = -1
         self.sizeAdjustPolicy = 0
         self.minimumContentsLength = 0
+        self._view = _ListView()
+        self.fontMetrics = _FontMetrics()
         self.currentTextChanged = Signal()
         self.currentIndexChanged = Signal()
+
+    def view(self):
+        return self._view
 
     def addItems(self, items):
         self._items.extend(items)

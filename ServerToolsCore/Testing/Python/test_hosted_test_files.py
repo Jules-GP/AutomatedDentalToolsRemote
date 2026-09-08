@@ -60,6 +60,20 @@ def _stub_slicer():
     sys.modules["slicer.ScriptedLoadableModule"] = framework
     slicer.ScriptedLoadableModule = framework
 
+    # `processEvents` so the "Loading ... into the scene" line is painted
+    # BEFORE the load blocks the main thread. Without it the panel still reads
+    # "Downloading", and a 0.3 s transfer followed by twenty seconds of
+    # decompression looks like a stalled download -- which is what a user
+    # reported.
+    class _App:
+        def __init__(self):
+            self.processed = 0
+
+        def processEvents(self):
+            self.processed += 1
+
+    slicer.app = _App()
+
     util = types.ModuleType("slicer.util")
 
     class VTKObservationMixin:
@@ -233,6 +247,10 @@ class HostedTestFileTest(unittest.TestCase):
         panel._testFileRoot = None
         panel._testFileCache = {}
         panel._progressLabel = None
+        # What the panel told the user, in order. `_showPhase` is the one
+        # channel a run and a download share.
+        panel.phases = []
+        panel._showPhase = panel.phases.append
         panel.applyButton = None
         panel._outputFolderWidget = None
         # The real build, so the callback wiring under test is the shipped one.
@@ -527,3 +545,44 @@ class SafeNameTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LoadingPhaseIsSaidOutLoudTest(HostedTestFileTest):
+    """A user reported "the download takes more than 20 seconds". It does not:
+    fetching a 94 MB scan over ranged parts is 0.3 s, measured against curl's
+    0.26 s. The twenty seconds are Slicer decompressing the volume and building
+    the image -- the feature that was asked for. The panel said "Downloading"
+    throughout, so a fast transfer looked like a stalled one."""
+
+    def test_the_scene_load_gets_its_own_progress_line(self):
+        self._offer({"name": "MG_test_scan.nii.gz", "kind": "file", "size": 6})
+        self.client.payloads["MG_test_scan.nii.gz"] = b"scan!!"
+
+        self._pick("MG_test_scan.nii.gz")
+        _Job.started[0].deliver()
+
+        scene = [line for line in self.panel.phases if "scene" in line.lower()]
+        self.assertTrue(scene, self.panel.phases)
+        self.assertIn("MG_test_scan.nii.gz", scene[-1])
+
+    def test_the_line_is_painted_before_the_load_blocks(self):
+        """`processEvents` between the message and the load, or the label is
+        repainted only once the twenty seconds are already over."""
+        self._offer({"name": "MG_test_scan.nii.gz", "kind": "file", "size": 6})
+        self.client.payloads["MG_test_scan.nii.gz"] = b"scan!!"
+        before = sys.modules["slicer"].app.processed
+
+        self._pick("MG_test_scan.nii.gz")
+        _Job.started[0].deliver()
+
+        self.assertGreater(sys.modules["slicer"].app.processed, before)
+
+    def test_a_folder_gets_no_scene_line_because_it_is_not_loaded(self):
+        self._offer({"name": "cohort", "kind": "folder", "size": 40})
+        self.client.payloads["cohort"] = {"a.nii.gz": b"x"}
+
+        self._pick("cohort")
+        _Job.started[0].deliver()
+
+        self.assertFalse([line for line in self.panel.phases if "scene" in line.lower()],
+                         self.panel.phases)
