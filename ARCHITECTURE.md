@@ -460,6 +460,51 @@ This is what keeps "add a field to a tool = zero client-side lines" true for
 *file* arguments too, not just scalar ones: a new file argument server-side
 appears in the panel with the right picker, unannounced.
 
+### Several runs from one panel: `_Run`, and the admission limit
+
+A panel used to hold one `_job`, and Apply hid itself behind Cancel until it
+finished. That is the wrong shape for the wait a clinician actually has, which
+is a **cohort**: the upload of the next patient has no reason to sit behind the
+inference of the previous one. `onApplyButton` now appends a `_Run` — its own
+inputs, its own `TempWorkspace`, its own thread — and `_pumpRuns` starts as many
+as `config.CONCURRENT_RUNS` allows. Apply stays available; clicking it again
+queues.
+
+**One mechanism serves both shapes, and the only thing between them is the
+number.** `CONCURRENT_RUNS = 1` is a strict queue that walks a cohort one
+patient at a time; `N` lets N transfers overlap. The default is 2, the smallest
+number that overlaps a transfer with a compute — and deliberately not 4, because
+the server admits `MAX_CONCURRENT_TOOLS = 4` **in total** across every panel and
+every client, so spending them all from one panel would make another module's
+run queue behind this one's cohort.
+
+**It is not a speed multiplier, and the docstrings say so.** The server
+serialises the card (`MAX_CONCURRENT_GPU_JOBS = 1`), so four segmentations still
+segment one at a time. What overlapping buys is the transfer of the next patient
+during the inference of the current one — on a cohort of 94 MB CBCTs, most of
+the wall clock — plus genuine parallelism across tools that do not both want the
+GPU.
+
+Four properties are worth more than the mechanism, and each has a test that
+fails without it (`test_runs.py`, verified by mutation):
+
+- **The inputs are read at Apply time, never at start time.** A run that starts
+  three minutes later because two were ahead of it must not pick up whatever the
+  pickers hold by then — that would run patient 3's scan under patient 1's
+  request, successfully, and say nothing.
+- **One scratch directory per run.** Two runs sharing one temp folder would
+  overwrite each other's inputs; finishing a run closes its own and no other.
+- **A failure costs one run.** The rest of the cohort goes on, and the queue
+  advances past it.
+- **Each callback binds its own run** (`lambda ..., run=run:`). Without that,
+  every progress line would report against whichever run was queued last.
+
+The progress label carries one line per run, and **a single run reads exactly as
+it always did** — no run number, no label. The prefix appears only once there is
+something to tell apart, which is the overwhelmingly common case left alone and
+nine modules' worth of habit preserved. A queued run says `queued`; the Cancel
+button says `Cancel all` above one, and cancels the queue with it.
+
 ### Sections and conditional fields
 
 `_buildAutoUI` creates one `ctkCollapsibleButton` per `section` the schema

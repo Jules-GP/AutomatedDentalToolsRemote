@@ -17,6 +17,23 @@ TIMEOUT = 600
 # it changes little and costs nothing. Set to 1 to go back to one stream.
 TRANSFER_PARALLELISM = 4
 
+# How many runs of ONE tool may be in flight at once from a single panel.
+# Apply always queues rather than refusing, so this only decides how much of the
+# queue moves together.
+#
+# It is not a speed multiplier. The server serialises the card
+# (MAX_CONCURRENT_GPU_JOBS = 1), so four segmentations still segment one at a
+# time; what overlapping buys is the transfer of the next patient during the
+# inference of the current one, which on a cohort of large CBCTs is most of the
+# wall clock. It also lets a CPU tool run beside a GPU one.
+#
+# 1 makes this a strict queue -- a cohort walked one patient at a time, nothing
+# overlapping. 2 is the default because it is the smallest number that overlaps
+# a transfer with a compute, and because the server admits 4 tool slots in total
+# across every panel and every client: spending them all from one panel would
+# make a second module's run wait behind this one's queue.
+CONCURRENT_RUNS = 2
+
 # Size of one part, in megabytes. The server clamps this to [1, 64] and answers
 # with what it actually used. Smaller parts recover faster from a dropped
 # connection; larger ones amortise the per-request overhead.

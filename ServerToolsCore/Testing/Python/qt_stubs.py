@@ -222,6 +222,10 @@ class QPushButton(QObject):
         self.clicked = Signal()
         self._checkable = False
 
+    def setText(self, text):
+        """PythonQt exposes both the property and the setter; so does this."""
+        self.text = text
+
     def setCheckable(self, checkable):
         self._checkable = bool(checkable)
 

@@ -261,9 +261,9 @@ class HostedTestFileTest(unittest.TestCase):
         # The rest of what a real __init__ sets and `cleanup()` reads. The
         # fixture builds the panel piecemeal; anything cleanup() touches has to
         # exist or the test fails for a reason that is not the subject.
-        panel._job = None
+        panel._runs = []
+        panel._runsStarted = 0
         panel._statusJob = None
-        panel._workspace = None
         panel._elapsedTimer = None
         panel._testFileRoot = None
         panel._testFileCache = {}
