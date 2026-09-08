@@ -695,3 +695,31 @@ class TimingsAreVisibleTest(HostedTestFileTest):
         # "ready in 0.3s (download 0.1s, move 0.0s, clean 0.0s, scene 0.2s)"
         message = _util.status_messages[-1]
         self.assertRegex(message, r"ready in \d+\.\d+s \(")
+
+
+class TheBreakdownStaysOnThePanelTest(HostedTestFileTest):
+    """`_hideProgress` used to run right after the load, so the one line saying
+    where the seconds went lived only in the status bar, for eight seconds.
+    That is no use to someone trying to find out why a download felt slow."""
+
+    def test_the_summary_is_still_showing_when_the_pick_is_over(self):
+        self._offer({"name": "MG_test_scan.nii.gz", "kind": "file", "size": 6})
+        self.client.payloads["MG_test_scan.nii.gz"] = b"scan!!"
+
+        self._pick("MG_test_scan.nii.gz")
+        _Job.started[0].deliver()
+
+        self.assertIn("ready in", self.panel.phases[-1])
+        self.assertIn("download", self.panel.phases[-1])
+
+    def test_a_folder_reports_no_scene_phase_because_there_was_none(self):
+        """Naming a phase that did not happen is worse than omitting it."""
+        self._offer({"name": "cohort", "kind": "folder", "size": 40})
+        self.client.payloads["cohort"] = {"a.nii.gz": b"x"}
+
+        self._pick("cohort")
+        _Job.started[0].deliver()
+
+        summary = self.panel.phases[-1]
+        self.assertIn("unpack", summary)
+        self.assertNotIn("scene", summary)

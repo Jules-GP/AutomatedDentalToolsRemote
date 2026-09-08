@@ -1329,6 +1329,7 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # A FOLDER is deliberately never loaded: a forty-patient cohort would
         # put hundreds of nodes in the scene, which is worse than showing
         # nothing at all.
+        loaded_into_scene = False
         if not os.path.isdir(path):
             # Said out loud, because this is the slow half and it does not look
             # like it: fetching a 94 MB scan takes 0.3 s over ranged parts,
@@ -1338,15 +1339,27 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self._showPhase(_("Loading {name} into the scene...").format(name=name))
             slicer.app.processEvents()
             slicer_io.load_input(path)
-        self._hideProgress()
+            loaded_into_scene = True
         # The breakdown goes where a user can actually see it. "It took more
         # than ten seconds" is not a bug report anyone can act on; "download
         # 0.3s, unpack 1.2s, scene 8.4s" is.
         timings = list(getattr(self, "_lastTestFileTimings", []))
-        timings.append(("scene", time.perf_counter() - load_started))
+        if loaded_into_scene:
+            # Only when there WAS one. A folder is never loaded, and reporting
+            # `scene 0.0s` for it would name a phase that did not happen.
+            timings.append(("scene", time.perf_counter() - load_started))
         total = sum(seconds for _label, seconds in timings)
         breakdown = ", ".join(
             "{} {:.1f}s".format(label, seconds) for label, seconds in timings
+        )
+        # LEFT on the panel, not hidden. `_hideProgress` used to run right
+        # here, so the one line saying where the seconds went lived only in the
+        # status bar for eight seconds -- which is no use to someone trying to
+        # find out why a download felt slow. It stays until the next action.
+        self._showPhase(
+            _("{name} ready in {total:.1f}s -- {breakdown}").format(
+                name=name, total=total, breakdown=breakdown
+            )
         )
         slicer.util.showStatusMessage(
             _("Test file ready in {total:.1f}s ({breakdown}): {path}").format(
