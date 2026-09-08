@@ -393,6 +393,38 @@ class QDoubleSpinBox(QSpinBox):
         self.decimals = decimals
 
 
+class QTimer(QObject):
+    """Records its state instead of running an event loop.
+
+    `BackgroundJob` drives two of these -- one draining its queue, one handing
+    the GIL to the worker thread -- and what a test needs to see is which of
+    them is running when, not Qt's scheduling.
+    """
+
+    def __init__(self, *_args, **_kwargs):
+        QObject.__init__(self)
+        self.interval = None
+        self.running = False
+        self.starts = 0
+        self.stops = 0
+        self.timeout = Signal()
+
+    def setInterval(self, milliseconds):
+        self.interval = milliseconds
+
+    def start(self, *_args):
+        self.running = True
+        self.starts += 1
+
+    def stop(self):
+        self.running = False
+        self.stops += 1
+
+    def fire(self):
+        """Call the connected slots, the way a real timeout would."""
+        self.timeout.emit()
+
+
 class QPalette:
     Window = 0
 

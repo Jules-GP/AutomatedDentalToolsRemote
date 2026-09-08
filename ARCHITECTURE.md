@@ -1034,6 +1034,38 @@ main thread. `cancel()` stops the timer and marks the job so any
 already-queued outcome is discarded; the underlying `requests.post` is not
 actually interrupted (see limitations).
 
+### The second timer, and why a worker thread needs one
+
+There are **two** timers, and the second one is not scheduling — it is a
+workaround for how Python is embedded in Slicer. Slicer's interpreter keeps the
+GIL on the main thread while that thread waits inside Qt's event loop, which is
+where it waits for all of a user's session. A Python worker thread therefore
+barely runs at all. Measured in Slicer, one bytecode loop:
+
+| the main thread is... | the worker manages |
+|---|---|
+| running the loop itself | 13,079,723 iterations/s |
+| **idle in Qt** — every real session | **6,632 iterations/s** |
+| ticking a 100 ms timer — the drain timer above | 453,957 iterations/s |
+| napping 1 ms at a time — as shipped | 15,586,975 iterations/s |
+
+The drain timer is not enough on its own: it lifts the worker by a factor of
+68 and leaves it 29 times short. This is what made a 94 MB test file take
+twenty seconds from a panel and under a second from a script, and it is why
+every earlier measurement taken from a harness looked fine — a harness that
+polls `processEvents()` runs Python on the main thread continuously, and hands
+the GIL over by accident.
+
+`time.sleep` releases the GIL for its duration, so `_yieldGil` sleeps and does
+nothing else; a `qt.QTimer` at interval 0 keeps calling it for as long as the
+job runs. Both timers start and stop together — a yield timer outliving its job
+would keep the main thread napping for nothing. End to end, the same download
+through the same `BackgroundJob`: **11.70 s → 0.32 s**.
+
+What it costs the interface is close to nothing. A 10 ms timer standing in for
+a repaint, measured over six seconds with a worker busy: median 10.3 ms → 12.3
+ms, p95 15.7 ms → 12.7 ms, worst 22.5 ms → 24.9 ms. Under one frame either way.
+
 ### Telling the user something is happening
 
 `progress_cb` alone is not enough, and the gap is not cosmetic. The worker

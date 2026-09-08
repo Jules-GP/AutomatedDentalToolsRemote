@@ -10,12 +10,30 @@ on the main thread.
 import logging
 import queue
 import threading
+import time
 
 import qt
 
 logger = logging.getLogger("ServerToolsCore.worker")
 
 _POLL_INTERVAL_MS = 100
+
+# Slicer's embedded interpreter keeps the GIL on the main thread while that
+# thread waits inside Qt's event loop, so a Python worker thread barely runs at
+# all. Measured in Slicer: a bytecode loop managing 13,079,723 iterations per
+# second on the main thread manages 6,632 on a worker while the main thread is
+# idle in Qt -- and a 94 MB test file that downloads in under a second from a
+# script took twenty seconds from a panel. The 100 ms drain timer below is not
+# enough on its own: it lifts the worker to 453,957, still twenty-nine times
+# short.
+#
+# `time.sleep` releases the GIL for its duration, so a timer whose callback
+# does nothing but sleep hands the main thread's idle time to the worker. The
+# same loop then measures 15,586,975 iterations per second, i.e. the transfer
+# runs at full speed. What it costs is that a UI event can wait up to
+# _YIELD_SECONDS for the main thread, which is a fraction of one frame.
+_YIELD_INTERVAL_MS = 0
+_YIELD_SECONDS = 0.001
 
 
 class BackgroundJob:
@@ -30,6 +48,9 @@ class BackgroundJob:
         self._timer = qt.QTimer()
         self._timer.setInterval(_POLL_INTERVAL_MS)
         self._timer.timeout.connect(self._drain)
+        self._yieldTimer = qt.QTimer()
+        self._yieldTimer.setInterval(_YIELD_INTERVAL_MS)
+        self._yieldTimer.timeout.connect(self._yieldGil)
         self._thread = None
         self._cancelled = False
 
@@ -37,13 +58,24 @@ class BackgroundJob:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         self._timer.start()
+        self._yieldTimer.start()
 
     def cancel(self) -> None:
         """Best-effort: the in-flight HTTP request cannot be interrupted, but its
         result is discarded and the UI is released immediately (see ARCHITECTURE.md
         limitations - no true server-side cancel)."""
         self._cancelled = True
+        self._stopTimers()
+
+    def _stopTimers(self) -> None:
+        """Both timers, always together: the yield timer outliving its job would
+        keep the main thread napping for nothing."""
         self._timer.stop()
+        self._yieldTimer.stop()
+
+    def _yieldGil(self) -> None:
+        """Sleep, and nothing else. The sleep IS the work (see _YIELD_SECONDS)."""
+        time.sleep(_YIELD_SECONDS)
 
     def _run(self) -> None:
         try:
@@ -65,11 +97,11 @@ class BackgroundJob:
                 if kind == "progress" and self._on_progress:
                     self._on_progress(payload)
                 elif kind == "success":
-                    self._timer.stop()
+                    self._stopTimers()
                     if self._on_success:
                         self._on_success(payload)
                 elif kind == "error":
-                    self._timer.stop()
+                    self._stopTimers()
                     if self._on_error:
                         self._on_error(payload)
         except queue.Empty:
