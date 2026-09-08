@@ -485,6 +485,7 @@ class ToolServerClient:
         probe_took = time.perf_counter() - probe_started
         if size and size >= transfer.MIN_CHUNKED_BYTES:
             body_started = time.perf_counter()
+            streams = self._parallelism
             transfer.download_ranged(
                 self._session,
                 url,
@@ -492,7 +493,7 @@ class ToolServerClient:
                 size,
                 headers=headers,
                 verify_tls=self._verify_tls,
-                parallelism=self._parallelism,
+                parallelism=streams,
                 chunk_bytes=self._chunk_bytes,
                 progress_cb=progress_cb,
                 label=label,
@@ -507,7 +508,7 @@ class ToolServerClient:
             print(
                 "[transfer] {} ranged {} stream(s), {:.1f} MB: probe {:.2f}s, "
                 "body {:.2f}s = {:.1f} MB/s{}".format(
-                    filename, self._parallelism, size / 1048576,
+                    filename, streams, size / 1048576,
                     probe_took, body_took, size / 1048576 / max(body_took, 1e-9),
                     spread,
                 )
@@ -515,7 +516,7 @@ class ToolServerClient:
             logger.info(
                 "GET %s -> %d byte(s) saved to %s (ranged, %d stream(s), "
                 "probe %.2fs, body %.2fs)",
-                url, size, destination, self._parallelism, probe_took, body_took,
+                url, size, destination, streams, probe_took, body_took,
             )
             return destination
 
