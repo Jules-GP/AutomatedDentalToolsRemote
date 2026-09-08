@@ -368,6 +368,12 @@ def _discard(session, server_url, headers, upload_id, verify_tls) -> None:
 # Download
 # ----------------------------------------------------------------------
 
+# Per-part durations of the most recent ranged download, for whoever wants to
+# report them. Module-level and cleared on entry: one transfer runs at a time
+# per client, and a caller that cares reads it straight after.
+last_part_times = []
+
+
 def download_ranged(
     session: requests.Session,
     url: str,
@@ -393,6 +399,10 @@ def download_ranged(
     headers = dict(headers or {})
     meter = _Meter(label, size, progress_cb)
 
+    # Filled in as the parts land; the caller prints it. A list rather than a
+    # return value so the existing signature is untouched.
+    last_part_times.clear()
+
     file_descriptor = os.open(destination, os.O_CREAT | os.O_WRONLY | os.O_TRUNC)
     try:
         if not size:
@@ -412,16 +422,25 @@ def download_ranged(
         failures_lock = threading.Lock()
         whole_body = threading.Event()
 
+        # One line per part, so "the download was slow" can be read as either
+        # "every part carried a fixed cost" (a per-connection problem) or "one
+        # part straggled and the rest waited" (contention). The two have
+        # nothing in common and no single total distinguishes them.
+        part_lock = threading.Lock()
+
         def fetch(span):
             start, end = span
             for attempt in range(_MAX_ATTEMPTS):
                 if whole_body.is_set():
                     return
                 try:
+                    part_started = time.monotonic()
                     _fetch_span(
                         session, url, headers, verify_tls, file_descriptor,
                         start, end, size, meter, whole_body,
                     )
+                    with part_lock:
+                        last_part_times.append(time.monotonic() - part_started)
                     return
                 except Exception as exc:  # noqa: BLE001 - retried, then reported
                     logger.debug("range %d-%d failed (attempt %d): %s", start, end, attempt, exc)

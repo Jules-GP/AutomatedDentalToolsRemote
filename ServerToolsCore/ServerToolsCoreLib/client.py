@@ -498,11 +498,18 @@ class ToolServerClient:
                 label=label,
             )
             body_took = time.perf_counter() - body_started
+            parts = sorted(transfer.last_part_times)
+            spread = ""
+            if parts:
+                spread = "; {} parts, fastest {:.2f}s, median {:.2f}s, slowest {:.2f}s".format(
+                    len(parts), parts[0], parts[len(parts) // 2], parts[-1]
+                )
             print(
                 "[transfer] {} ranged {} stream(s), {:.1f} MB: probe {:.2f}s, "
-                "body {:.2f}s = {:.1f} MB/s".format(
+                "body {:.2f}s = {:.1f} MB/s{}".format(
                     filename, self._parallelism, size / 1048576,
                     probe_took, body_took, size / 1048576 / max(body_took, 1e-9),
+                    spread,
                 )
             )
             logger.info(
@@ -512,6 +519,10 @@ class ToolServerClient:
             )
             return destination
 
+        # The sequential fallback. Which of the two paths ran is the first
+        # thing anyone asks when a transfer is slow, and until this print the
+        # log said nothing at all when it was this one.
+        body_started = time.perf_counter()
         try:
             response = self._session.get(
                 url,
@@ -534,7 +545,18 @@ class ToolServerClient:
                     received += len(chunk)
                     if progress_cb:
                         progress_cb(_download_message(received, expected, filename))
-        logger.info("GET %s -> %d byte(s) saved to %s", url, received, destination)
+        body_took = time.perf_counter() - body_started
+        print(
+            "[transfer] {} sequential (probe said {}), {:.1f} MB: probe {:.2f}s, "
+            "body {:.2f}s = {:.1f} MB/s".format(
+                filename, size if size else "no ranges", received / 1048576,
+                probe_took, body_took, received / 1048576 / max(body_took, 1e-9),
+            )
+        )
+        logger.info(
+            "GET %s -> %d byte(s) saved to %s (sequential, probe %.2fs, body %.2fs)",
+            url, received, destination, probe_took, body_took,
+        )
         return destination
 
     def _fetch_tools(self) -> dict:
