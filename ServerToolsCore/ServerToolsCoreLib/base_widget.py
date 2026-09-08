@@ -1274,6 +1274,12 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 phase("move", lambda: os.replace(payload, destination))
         finally:
             phase("clean", lambda: shutil.rmtree(staging, ignore_errors=True))
+            # Kept on the instance so the main thread can SHOW it. A
+            # `logger.info` alone does not reach Slicer's Python console, so
+            # the measurement existed and nobody could read it -- the same
+            # mistake as the server's peak VRAM, which was recorded on every
+            # run and never read back.
+            self._lastTestFileTimings = list(timings)
             logger.info(
                 "test file %r: %s", name,
                 ", ".join("{} {:.2f}s".format(label, seconds) for label, seconds in timings),
@@ -1313,6 +1319,7 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
         failed load is a log line and the run goes ahead (slicer_io.load_input
         never raises).
         """
+        load_started = time.perf_counter()
         self._testFileCache[name] = path
         widget = self._inputWidgets.get(arg_name)
         if widget is not None:
@@ -1332,9 +1339,22 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
             slicer.app.processEvents()
             slicer_io.load_input(path)
         self._hideProgress()
-        slicer.util.showStatusMessage(
-            _("Test file ready: {path}").format(path=path), 5000
+        # The breakdown goes where a user can actually see it. "It took more
+        # than ten seconds" is not a bug report anyone can act on; "download
+        # 0.3s, unpack 1.2s, scene 8.4s" is.
+        timings = list(getattr(self, "_lastTestFileTimings", []))
+        timings.append(("scene", time.perf_counter() - load_started))
+        total = sum(seconds for _label, seconds in timings)
+        breakdown = ", ".join(
+            "{} {:.1f}s".format(label, seconds) for label, seconds in timings
         )
+        slicer.util.showStatusMessage(
+            _("Test file ready in {total:.1f}s ({breakdown}): {path}").format(
+                total=total, breakdown=breakdown, path=path
+            ),
+            8000,
+        )
+        logger.info("test file %r ready in %.1fs (%s)", name, total, breakdown)
 
     # ------------------------------------------------------------------
     # Server status banner

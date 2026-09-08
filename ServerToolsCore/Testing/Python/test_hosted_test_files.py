@@ -89,7 +89,11 @@ def _stub_slicer():
     util.tempDirectory = lambda key="__SlicerTemp__", **kwargs: tempfile.mkdtemp(
         prefix=key + "_"
     )
-    util.showStatusMessage = lambda *args, **kwargs: None
+    # Kept, because it is where the timing breakdown a user reads ends up.
+    util.status_messages = []
+    util.showStatusMessage = lambda message, *args, **kwargs: (
+        util.status_messages.append(message)
+    )
     util.errorDisplay = lambda *args, **kwargs: None
     util.loaded = []          # what a test asserts the scene received
     util.load_failures = set()  # paths the stubbed readers refuse
@@ -648,3 +652,46 @@ class LeftoverSweepTest(HostedTestFileTest):
             self.assertTrue(self.panel._testFileDir())
         finally:
             app.temporaryPath = original
+
+
+class TimingsAreVisibleTest(HostedTestFileTest):
+    """A user reported "the download takes more than ten seconds". It does not:
+    inside Slicer a 94 MB scan is 1.7 s including the scene load, and a 7.4 MB
+    cohort is 0.3 s. But `logger.info` does not reach Slicer's Python console,
+    so the breakdown that would have settled it was measured and unreadable --
+    the same mistake as the server's peak VRAM, recorded on every run and never
+    read back."""
+
+    def test_the_status_line_breaks_the_time_down_by_phase(self):
+        self._offer({"name": "MG_test_scan.nii.gz", "kind": "file", "size": 6})
+        self.client.payloads["MG_test_scan.nii.gz"] = b"scan!!"
+
+        self._pick("MG_test_scan.nii.gz")
+        _Job.started[0].deliver()
+
+        message = _util.status_messages[-1]
+        self.assertIn("download", message)
+        self.assertIn("scene", message)
+        self.assertIn("MG_test_scan.nii.gz", message)
+
+    def test_a_folder_reports_its_unpack_phase(self):
+        self._offer({"name": "cohort", "kind": "folder", "size": 40})
+        self.client.payloads["cohort"] = {"a.nii.gz": b"x"}
+
+        self._pick("cohort")
+        _Job.started[0].deliver()
+
+        message = _util.status_messages[-1]
+        self.assertIn("unpack", message)
+        self.assertIn("download", message)
+
+    def test_the_total_is_the_sum_of_the_phases(self):
+        self._offer({"name": "MG_test_scan.nii.gz", "kind": "file", "size": 6})
+        self.client.payloads["MG_test_scan.nii.gz"] = b"scan!!"
+
+        self._pick("MG_test_scan.nii.gz")
+        _Job.started[0].deliver()
+
+        # "ready in 0.3s (download 0.1s, move 0.0s, clean 0.0s, scene 0.2s)"
+        message = _util.status_messages[-1]
+        self.assertRegex(message, r"ready in \d+\.\d+s \(")
