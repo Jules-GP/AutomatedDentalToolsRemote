@@ -470,13 +470,23 @@ inputs, its own `TempWorkspace`, its own thread — and `_pumpRuns` starts as ma
 as `config.CONCURRENT_RUNS` allows. Apply stays available; clicking it again
 queues.
 
+**The default is one run at a time per tool**, which is the shape a panel is
+expected to have — a panel running two of the same tool at once is not what a
+panel looks like. What changed against the old behaviour is only that a second
+Apply *waits its turn* instead of being refused.
+
+**Different tools are unaffected, and that needs no setting.** Each panel holds
+its own `_runs`, so AMASSS and ALI run side by side; the cap that applies there
+is the server's `MAX_CONCURRENT_TOOLS`, not anything on this side. Measured from
+one Slicer session: four runs started together, `3.7x overlap`.
+
 **One mechanism serves both shapes, and the only thing between them is the
-number.** `CONCURRENT_RUNS = 1` is a strict queue that walks a cohort one
-patient at a time; `N` lets N transfers overlap. The default is 2, the smallest
-number that overlaps a transfer with a compute — and deliberately not 4, because
-the server admits `MAX_CONCURRENT_TOOLS = 4` **in total** across every panel and
-every client, so spending them all from one panel would make another module's
-run queue behind this one's cohort.
+number.** Raising `CONCURRENT_RUNS` lets N runs of one tool be in flight, which
+is worth doing for a cohort — the transfer of the next patient overlaps the
+inference of the current one. Keep it well under 4: the server admits
+`MAX_CONCURRENT_TOOLS = 4` **in total** across every panel and every client, so
+spending them all from one panel would make another module's run queue behind
+this one's cohort.
 
 **It is not a speed multiplier, and the docstrings say so.** The server
 serialises the card (`MAX_CONCURRENT_GPU_JOBS = 1`), so four segmentations still

@@ -27,12 +27,16 @@ TRANSFER_PARALLELISM = 4
 # inference of the current one, which on a cohort of large CBCTs is most of the
 # wall clock. It also lets a CPU tool run beside a GPU one.
 #
-# 1 makes this a strict queue -- a cohort walked one patient at a time, nothing
-# overlapping. 2 is the default because it is the smallest number that overlaps
-# a transfer with a compute, and because the server admits 4 tool slots in total
-# across every panel and every client: spending them all from one panel would
-# make a second module's run wait behind this one's queue.
-CONCURRENT_RUNS = 2
+# 1 is the default and the shape a panel is expected to have: ONE run of a tool
+# at a time, extra clicks waiting their turn. Different tools are unaffected --
+# each panel keeps its own queue, so AMASSS and ALI still run side by side.
+#
+# Raise it to overlap the transfer of the next patient with the inference of the
+# current one, which on a cohort of large CBCTs is most of the wall clock. Keep
+# it well under 4: the server admits MAX_CONCURRENT_TOOLS = 4 in total across
+# every panel and every client, so spending them all from one panel would make
+# another module's run wait behind this one's cohort.
+CONCURRENT_RUNS = 1
 
 # Size of one part, in megabytes. The server clamps this to [1, 64] and answers
 # with what it actually used. Smaller parts recover faster from a dropped

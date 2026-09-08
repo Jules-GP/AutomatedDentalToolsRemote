@@ -356,6 +356,107 @@ class RunQueueTest(unittest.TestCase):
         self.assertEqual(self.panel._runs[0].number, 2)
 
 
+class OneJobPerToolTest(unittest.TestCase):
+    """The default shape: one run at a time per tool, several tools at once.
+
+    This is what a clinician expects of a panel, and what the panel did before
+    it learned to queue -- minus the part where a second Apply was simply
+    refused. Two properties make it up, and they are independent:
+
+    - within ONE tool, a second Apply queues and starts by itself;
+    - across tools, nothing is shared, so each panel holds its own run and they
+      overlap. The cap that matters there is the server's MAX_CONCURRENT_TOOLS,
+      not anything here.
+    """
+
+    def setUp(self):
+        _Job.started = []
+        self.addCleanup(setattr, base_widget, "BackgroundJob", base_widget.BackgroundJob)
+        base_widget.BackgroundJob = _Job
+        self.addCleanup(setattr, config, "CONCURRENT_RUNS", config.CONCURRENT_RUNS)
+
+    def _panel(self, tool_name):
+        panel = ServerToolWidgetBase.__new__(ServerToolWidgetBase)
+        panel.TOOL_NAME = tool_name
+        panel._runs = []
+        panel._runsStarted = 0
+        panel._elapsedTimer = None
+        panel._outputFolderWidget = None
+        panel.applyButton = qt.QPushButton("Apply")
+        panel.cancelButton = qt.QPushButton("Cancel")
+        panel.prepareInputFiles = lambda workspace: {"t1": "/data/" + tool_name + ".nii.gz"}
+        panel.collectArgs = lambda: {}
+        panel.handleResult = lambda result: None
+        panel._showPhase = lambda text: None
+        panel._hideProgress = lambda: None
+        panel._checkCanApply = lambda *args: None
+        self.addCleanup(panel.onCancelButton)
+        return panel
+
+    def test_the_shipped_default_is_one_run_at_a_time(self):
+        """A panel running two of the same tool at once is not what a panel
+        looks like. The overlap is opt-in, not the resting state."""
+        self.assertEqual(config.CONCURRENT_RUNS, 1)
+
+    def test_a_second_apply_on_one_tool_waits_for_the_first(self):
+        config.CONCURRENT_RUNS = 1
+        panel = self._panel("AMASSS")
+
+        panel.onApplyButton()
+        panel.onApplyButton()
+
+        self.assertEqual(len(_Job.started), 1)
+        self.assertEqual(len(panel._runs), 2, "the second is kept, not refused")
+
+    def test_two_tools_run_at_the_same_time(self):
+        config.CONCURRENT_RUNS = 1
+        amasss = self._panel("AMASSS")
+        ali = self._panel("ALI")
+
+        amasss.onApplyButton()
+        ali.onApplyButton()
+
+        self.assertEqual(len(_Job.started), 2, "one panel held the other back")
+        self.assertTrue(amasss._runs[0].running)
+        self.assertTrue(ali._runs[0].running)
+
+    def test_one_tool_s_queue_is_not_the_other_s(self):
+        config.CONCURRENT_RUNS = 1
+        amasss = self._panel("AMASSS")
+        ali = self._panel("ALI")
+
+        amasss.onApplyButton()
+        amasss.onApplyButton()
+        ali.onApplyButton()
+
+        self.assertEqual(len(amasss._runs), 2)
+        self.assertEqual(len(ali._runs), 1)
+        self.assertEqual(len(_Job.started), 2, "ALI waited behind AMASSS's queue")
+
+    def test_cancelling_one_tool_leaves_the_other_running(self):
+        config.CONCURRENT_RUNS = 1
+        amasss = self._panel("AMASSS")
+        ali = self._panel("ALI")
+        amasss.onApplyButton()
+        ali.onApplyButton()
+
+        amasss.onCancelButton()
+
+        self.assertEqual(amasss._runs, [])
+        self.assertEqual(len(ali._runs), 1)
+        self.assertTrue(ali._runs[0].running)
+
+    def test_raising_the_limit_is_all_it_takes_to_overlap(self):
+        """The whole difference between the two shapes, in one number."""
+        config.CONCURRENT_RUNS = 2
+        panel = self._panel("AMASSS")
+
+        panel.onApplyButton()
+        panel.onApplyButton()
+
+        self.assertEqual(len(_Job.started), 2)
+
+
 class RunLabelTest(unittest.TestCase):
     """A run is named after what it was given, so a cohort's lines read."""
 
