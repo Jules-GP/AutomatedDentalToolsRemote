@@ -1099,6 +1099,16 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # The tool's own test files, downloaded from the server on selection
     # ------------------------------------------------------------------
 
+    # Our own key, so the sweep below can tell OUR leftovers from every other
+    # module's use of slicer.util.tempDirectory().
+    TEST_FILE_DIR_KEY = "ADTRemoteTestFiles"
+
+    # How old a leftover has to be before it is swept. Long enough that a
+    # SECOND Slicer running right now keeps its own directory: two instances
+    # are normal on this project's machines, and deleting the other one's
+    # cohort mid-download would be a far worse bug than the disk it saves.
+    _LEFTOVER_AGE_SECONDS = 12 * 3600
+
     def _testFileDir(self) -> str:
         """A directory for this session's downloaded test files, created once.
 
@@ -1107,10 +1117,42 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
         a test file once to look at it has not asked to keep it. It also hands
         back a NEW directory per call, which is why the first one is kept -- a
         second pick of the same entry has to find the first one's bytes.
+
+        Slicer's own docstring says it plainly: "This directory is not
+        automatically cleaned up." The name carries a timestamp, so every
+        session makes another one and nothing ever removes them -- 648 MB per
+        cohort, per launch, until the operating system gets round to /tmp,
+        which on a workstation left running is never. So this sweeps what
+        earlier sessions left before making today's.
         """
         if not self._testFileRoot:
-            self._testFileRoot = slicer.util.tempDirectory()
+            self._sweepLeftoverTestFiles()
+            self._testFileRoot = slicer.util.tempDirectory(key=self.TEST_FILE_DIR_KEY)
         return self._testFileRoot
+
+    @classmethod
+    def _sweepLeftoverTestFiles(cls) -> None:
+        """Remove test-file directories earlier sessions left behind.
+
+        Ours only, by key, and only ones old enough that no live session can
+        own them. Every failure is ignored: a directory that cannot be removed
+        is disk, and disk must never cost a user their run.
+        """
+        try:
+            root = slicer.app.temporaryPath
+            cutoff = time.time() - cls._LEFTOVER_AGE_SECONDS
+            for name in os.listdir(root):
+                if not name.startswith(cls.TEST_FILE_DIR_KEY):
+                    continue
+                path = os.path.join(root, name)
+                try:
+                    if os.path.isdir(path) and os.path.getmtime(path) < cutoff:
+                        shutil.rmtree(path, ignore_errors=True)
+                        logger.info("removed a leftover test-file directory: %s", path)
+                except OSError:
+                    continue
+        except Exception:  # noqa: BLE001 - housekeeping, never fatal
+            logger.debug("could not sweep leftover test files", exc_info=True)
 
     def _declaredKind(self, arg_name: str, name: str):
         """"file", "folder" or None - what the server said this entry is.
@@ -1198,9 +1240,24 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
         staging = destination + ".downloading"
         shutil.rmtree(staging, ignore_errors=True)
         os.makedirs(staging)
+        # Timed per phase and logged. Outside Slicer this whole path measures
+        # 0.22 s for a 94 MB file and 0.39 s for a 94 MB folder -- against
+        # curl's 0.24 s -- while a user watching the panel reported more than
+        # ten seconds. The difference is somewhere in here, and one log line
+        # says where instead of inviting a guess.
+        timings = []
+
+        def phase(label, work):
+            started = time.perf_counter()
+            try:
+                return work()
+            finally:
+                timings.append((label, time.perf_counter() - started))
+
         try:
             payload = os.path.join(staging, _safe_name(name))
-            self.client.download_testfile(self.TOOL_NAME, name, payload, progress_cb)
+            phase("download", lambda: self.client.download_testfile(
+                self.TOOL_NAME, name, payload, progress_cb))
 
             # A hosted FOLDER is zipped by the server on the way out (there
             # being no other way to put a directory on a wire) and is unpacked
@@ -1211,12 +1268,16 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
             if self._hostedKind(name, declared, payload) == "folder":
                 progress_cb(_("Unpacking {name}...").format(name=name))
                 unpacked = os.path.join(staging, "unpacked")
-                slicer_io.unzip_folder(payload, unpacked)
-                os.rename(unpacked, destination)
+                phase("unpack", lambda: slicer_io.unzip_folder(payload, unpacked))
+                phase("move", lambda: os.rename(unpacked, destination))
             else:
-                os.replace(payload, destination)
+                phase("move", lambda: os.replace(payload, destination))
         finally:
-            shutil.rmtree(staging, ignore_errors=True)
+            phase("clean", lambda: shutil.rmtree(staging, ignore_errors=True))
+            logger.info(
+                "test file %r: %s", name,
+                ", ".join("{} {:.2f}s".format(label, seconds) for label, seconds in timings),
+            )
         # Either way the answer is the same path: a file lands as itself and a
         # folder as its unpacked directory, so nothing downstream has to ask
         # which it was.

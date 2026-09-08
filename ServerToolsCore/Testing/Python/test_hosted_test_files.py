@@ -26,6 +26,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import threading
 import types
 import unittest
@@ -68,6 +69,8 @@ def _stub_slicer():
     class _App:
         def __init__(self):
             self.processed = 0
+            # Where leftovers from earlier sessions would be found.
+            self.temporaryPath = tempfile.mkdtemp(prefix="slicer_temp_root_")
 
         def processEvents(self):
             self.processed += 1
@@ -81,7 +84,11 @@ def _stub_slicer():
             pass
 
     util.VTKObservationMixin = VTKObservationMixin
-    util.tempDirectory = lambda: tempfile.mkdtemp(prefix="slicer_session_")
+    # `key` is how the module names its own directories so it can sweep its
+    # own leftovers without touching another module's.
+    util.tempDirectory = lambda key="__SlicerTemp__", **kwargs: tempfile.mkdtemp(
+        prefix=key + "_"
+    )
     util.showStatusMessage = lambda *args, **kwargs: None
     util.errorDisplay = lambda *args, **kwargs: None
     util.loaded = []          # what a test asserts the scene received
@@ -586,3 +593,58 @@ class LoadingPhaseIsSaidOutLoudTest(HostedTestFileTest):
 
         self.assertFalse([line for line in self.panel.phases if "scene" in line.lower()],
                          self.panel.phases)
+
+
+class LeftoverSweepTest(HostedTestFileTest):
+    """Slicer's own docstring for `tempDirectory` says it: "This directory is
+    not automatically cleaned up." The name carries a timestamp, so every
+    session makes another one -- 648 MB per cohort, per launch, until the
+    operating system gets round to /tmp, which on a workstation left running
+    is never."""
+
+    def _leftover(self, name, age_seconds):
+        root = sys.modules["slicer"].app.temporaryPath
+        path = os.path.join(root, name)
+        os.makedirs(path, exist_ok=True)
+        with open(os.path.join(path, "cohort.nii.gz"), "wb") as handle:
+            handle.write(b"x" * 32)
+        stamp = time.time() - age_seconds
+        os.utime(path, (stamp, stamp))
+        return path
+
+    def test_an_old_directory_of_ours_is_removed(self):
+        key = base_widget.ServerToolWidgetBase.TEST_FILE_DIR_KEY
+        stale = self._leftover(key + "2026-09-01_10+00+00.000", 48 * 3600)
+
+        self.panel._testFileDir()
+
+        self.assertFalse(os.path.exists(stale))
+
+    def test_a_recent_directory_is_left_alone(self):
+        """A SECOND Slicer may be running right now and own it. Two instances
+        are normal here, and deleting the other one's cohort mid-download is a
+        far worse bug than the disk it saves."""
+        key = base_widget.ServerToolWidgetBase.TEST_FILE_DIR_KEY
+        fresh = self._leftover(key + "2026-09-08_11+00+00.000", 60)
+
+        self.panel._testFileDir()
+
+        self.assertTrue(os.path.exists(fresh))
+
+    def test_another_modules_temp_directory_is_never_touched(self):
+        """`tempDirectory()` is shared. Sweeping by key is what keeps this from
+        deleting someone else's working files."""
+        theirs = self._leftover("__SlicerTemp__2026-09-01_10+00+00.000", 48 * 3600)
+
+        self.panel._testFileDir()
+
+        self.assertTrue(os.path.exists(theirs))
+
+    def test_a_sweep_that_cannot_run_does_not_cost_the_download(self):
+        """Housekeeping must never fail a user's run."""
+        app = sys.modules["slicer"].app
+        original, app.temporaryPath = app.temporaryPath, "/does/not/exist"
+        try:
+            self.assertTrue(self.panel._testFileDir())
+        finally:
+            app.temporaryPath = original
