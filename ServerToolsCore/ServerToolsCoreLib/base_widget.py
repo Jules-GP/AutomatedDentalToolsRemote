@@ -1103,11 +1103,13 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # module's use of slicer.util.tempDirectory().
     TEST_FILE_DIR_KEY = "ADTRemoteTestFiles"
 
-    # How old a leftover has to be before it is swept. Long enough that a
-    # SECOND Slicer running right now keeps its own directory: two instances
-    # are normal on this project's machines, and deleting the other one's
-    # cohort mid-download would be a far worse bug than the disk it saves.
-    _LEFTOVER_AGE_SECONDS = 12 * 3600
+    # Written inside each directory so the sweep can ask "is the session that
+    # made this still running?" instead of guessing from a timestamp. An age
+    # threshold was the first attempt and it was wrong in both directions: at
+    # twelve hours, thirty-five directories and 2.4 GB piled up in a single
+    # afternoon of launching Slicer, while a session left open longer than the
+    # threshold could have had its own cohort deleted underneath it.
+    OWNER_FILE = ".owner-pid"
 
     def _testFileDir(self) -> str:
         """A directory for this session's downloaded test files, created once.
@@ -1128,27 +1130,34 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
         if not self._testFileRoot:
             self._sweepLeftoverTestFiles()
             self._testFileRoot = slicer.util.tempDirectory(key=self.TEST_FILE_DIR_KEY)
+            try:
+                with open(os.path.join(self._testFileRoot, self.OWNER_FILE), "w") as handle:
+                    handle.write(str(os.getpid()))
+            except OSError:  # the sweep will fall back to leaving it alone
+                logger.debug("could not mark the test-file directory", exc_info=True)
         return self._testFileRoot
 
     @classmethod
     def _sweepLeftoverTestFiles(cls) -> None:
         """Remove test-file directories earlier sessions left behind.
 
-        Ours only, by key, and only ones old enough that no live session can
-        own them. Every failure is ignored: a directory that cannot be removed
+        Ours only, by key, and only ones whose owning process is gone -- so a
+        second Slicer running right now keeps its own, however long it has been
+        open. A directory with no owner mark is from a build before this and is
+        removed. Every failure is ignored: a directory that cannot be removed
         is disk, and disk must never cost a user their run.
         """
         try:
             root = slicer.app.temporaryPath
-            cutoff = time.time() - cls._LEFTOVER_AGE_SECONDS
             for name in os.listdir(root):
                 if not name.startswith(cls.TEST_FILE_DIR_KEY):
                     continue
                 path = os.path.join(root, name)
                 try:
-                    if os.path.isdir(path) and os.path.getmtime(path) < cutoff:
-                        shutil.rmtree(path, ignore_errors=True)
-                        logger.info("removed a leftover test-file directory: %s", path)
+                    if not os.path.isdir(path) or cls._ownerIsAlive(path):
+                        continue
+                    shutil.rmtree(path, ignore_errors=True)
+                    logger.info("removed a leftover test-file directory: %s", path)
                 except OSError:
                     continue
         except Exception:  # noqa: BLE001 - housekeeping, never fatal
@@ -1169,6 +1178,25 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 kind = entry.get("kind")
                 return kind if kind in ("file", "folder") else None
         return None
+
+    @classmethod
+    def _ownerIsAlive(cls, path: str) -> bool:
+        """Is the Slicer that created this directory still running?
+
+        `os.kill(pid, 0)` asks the kernel and changes nothing. An unreadable or
+        nonsensical mark counts as dead: the worst case is deleting a cohort
+        someone would have re-downloaded, against a disk that fills up for good.
+        """
+        try:
+            with open(os.path.join(path, cls.OWNER_FILE)) as handle:
+                pid = int(handle.read().strip())
+        except (OSError, ValueError):
+            return False
+        try:
+            os.kill(pid, 0)
+        except (OSError, ProcessLookupError):
+            return False
+        return True
 
     def _onHostedTestFile(self, arg_name: str, name: str) -> None:
         """Download one of the tool's server-hosted test files and use it.

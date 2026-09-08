@@ -459,7 +459,11 @@ class HostedTestFileTest(unittest.TestCase):
         _Job.started[0].deliver()
 
         self.assertEqual(self._row.currentPath, "")
-        self.assertEqual(os.listdir(self.panel._testFileRoot), [])
+        # The owner mark is not a leftover download: it is how the sweep knows
+        # this session is still alive and its directory is not to be removed.
+        left = [name for name in os.listdir(self.panel._testFileRoot)
+                if name != base_widget.ServerToolWidgetBase.OWNER_FILE]
+        self.assertEqual(left, [])
         # And the panel is ready to try again.
         self.assertIsNone(self.panel._downloadJob)
 
@@ -616,24 +620,50 @@ class LeftoverSweepTest(HostedTestFileTest):
         os.utime(path, (stamp, stamp))
         return path
 
-    def test_an_old_directory_of_ours_is_removed(self):
+    def _own(self, path, pid):
+        with open(os.path.join(path, base_widget.ServerToolWidgetBase.OWNER_FILE), "w") as h:
+            h.write(str(pid))
+
+    def test_a_directory_whose_session_is_gone_is_removed(self):
         key = base_widget.ServerToolWidgetBase.TEST_FILE_DIR_KEY
         stale = self._leftover(key + "2026-09-01_10+00+00.000", 48 * 3600)
+        # A pid that cannot be running: 0 is never a user process.
+        self._own(stale, 2 ** 31 - 1)
 
         self.panel._testFileDir()
 
         self.assertFalse(os.path.exists(stale))
 
-    def test_a_recent_directory_is_left_alone(self):
-        """A SECOND Slicer may be running right now and own it. Two instances
-        are normal here, and deleting the other one's cohort mid-download is a
-        far worse bug than the disk it saves."""
+    def test_a_directory_a_live_session_owns_is_left_alone(self):
+        """A SECOND Slicer may be running right now and own it, however long it
+        has been open. An age threshold got this wrong in both directions: 2.4
+        GB piled up in one afternoon at twelve hours, and a session open longer
+        than the threshold could have had its own cohort deleted underneath
+        it."""
         key = base_widget.ServerToolWidgetBase.TEST_FILE_DIR_KEY
-        fresh = self._leftover(key + "2026-09-08_11+00+00.000", 60)
+        theirs = self._leftover(key + "2026-09-01_09+00+00.000", 72 * 3600)
+        self._own(theirs, os.getpid())          # this very process is alive
 
         self.panel._testFileDir()
 
-        self.assertTrue(os.path.exists(fresh))
+        self.assertTrue(os.path.exists(theirs))
+
+    def test_a_directory_with_no_owner_mark_is_removed(self):
+        """From a build before the mark existed. The worst case is a cohort
+        someone re-downloads; the alternative is a disk that fills for good."""
+        key = base_widget.ServerToolWidgetBase.TEST_FILE_DIR_KEY
+        unmarked = self._leftover(key + "2026-08-01_09+00+00.000", 0)
+
+        self.panel._testFileDir()
+
+        self.assertFalse(os.path.exists(unmarked))
+
+    def test_this_session_marks_its_own_directory(self):
+        own = self.panel._testFileDir()
+
+        marker = os.path.join(own, base_widget.ServerToolWidgetBase.OWNER_FILE)
+        self.assertTrue(os.path.exists(marker))
+        self.assertEqual(open(marker).read().strip(), str(os.getpid()))
 
     def test_another_modules_temp_directory_is_never_touched(self):
         """`tempDirectory()` is shared. Sweeping by key is what keeps this from
