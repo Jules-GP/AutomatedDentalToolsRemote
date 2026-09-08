@@ -205,6 +205,7 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
         if self._workspace:
             self._workspace.__exit__(None, None, None)
             self._workspace = None
+        self._removeOwnTestFiles()
 
     def enter(self) -> None:
         if self.uiWidget:
@@ -217,6 +218,11 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # Slicer is open is invisible until Slicer is restarted, with no
         # affordance on the panel saying so: the user sees a dropdown that is
         # simply missing the entry they were told to pick.
+        # Swept on ENTER, not only when someone picks a test file. Slicer
+        # never removes what `tempDirectory()` creates -- its own docstring
+        # says so -- and a user who downloaded a 648 MB cohort once and did not
+        # come back would keep it for good. Opening any tool is now enough.
+        self._sweepLeftoverTestFiles()
         self._refreshServerSelectables()
         self._refreshSceneVolumes()
         self._refreshServerStatus()
@@ -1197,6 +1203,26 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
         except (OSError, ProcessLookupError):
             return False
         return True
+
+    def _removeOwnTestFiles(self) -> None:
+        """Drop this session's downloaded test files when the panel goes away.
+
+        `cleanup()` runs when the widget is destroyed -- Slicer quitting, or a
+        module reload -- so the path an input still holds is about to stop
+        mattering. If it never runs (a crash), the next session's sweep finds
+        the directory with a dead owner and removes it then. Two layers,
+        because Slicer removes nothing on its own and a clinician has no reason
+        to know /tmp exists.
+        """
+        root, self._testFileRoot = self._testFileRoot, None
+        self._testFileCache.clear()
+        if not root:
+            return
+        try:
+            shutil.rmtree(root, ignore_errors=True)
+            logger.info("removed this session's test-file directory: %s", root)
+        except Exception:  # noqa: BLE001 - housekeeping, never fatal
+            logger.debug("could not remove %s", root, exc_info=True)
 
     def _onHostedTestFile(self, arg_name: str, name: str) -> None:
         """Download one of the tool's server-hosted test files and use it.

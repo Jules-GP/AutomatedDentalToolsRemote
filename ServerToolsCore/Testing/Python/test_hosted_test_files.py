@@ -83,6 +83,9 @@ def _stub_slicer():
         def __init__(self, *args, **kwargs):
             pass
 
+        def removeObservers(self, *args, **kwargs):
+            """`cleanup()` calls it; the stub has no scene to observe."""
+
     util.VTKObservationMixin = VTKObservationMixin
     # `key` is how the module names its own directories so it can sweep its
     # own leftovers without touching another module's.
@@ -255,6 +258,13 @@ class HostedTestFileTest(unittest.TestCase):
         panel._hiddenArgs = set()
         panel._sceneVolumes = {}
         panel._downloadJob = None
+        # The rest of what a real __init__ sets and `cleanup()` reads. The
+        # fixture builds the panel piecemeal; anything cleanup() touches has to
+        # exist or the test fails for a reason that is not the subject.
+        panel._job = None
+        panel._statusJob = None
+        panel._workspace = None
+        panel._elapsedTimer = None
         panel._testFileRoot = None
         panel._testFileCache = {}
         panel._progressLabel = None
@@ -753,3 +763,58 @@ class TheBreakdownStaysOnThePanelTest(HostedTestFileTest):
         summary = self.panel.phases[-1]
         self.assertIn("unpack", summary)
         self.assertNotIn("scene", summary)
+
+
+class NothingIsLeftBehindTest(HostedTestFileTest):
+    """Slicer removes nothing that `tempDirectory()` creates -- its own
+    docstring says so -- and on this machine `/tmp` is on disk with no age
+    limit in tmpfiles.d, so a directory from 28 August was still there on
+    8 September. A clinician has no reason to know any of that exists."""
+
+    def test_closing_the_panel_takes_this_session_s_downloads_with_it(self):
+        self._offer({"name": "MG_test_scan.nii.gz", "kind": "file", "size": 6})
+        self.client.payloads["MG_test_scan.nii.gz"] = b"scan!!"
+        self._pick("MG_test_scan.nii.gz")
+        _Job.started[0].deliver()
+        root = self.panel._testFileRoot
+        self.assertTrue(os.path.isdir(root))
+
+        self.panel.cleanup()
+
+        self.assertFalse(os.path.exists(root))
+
+    def test_a_second_pick_after_cleanup_starts_a_fresh_directory(self):
+        """Removing the cache must not leave the panel pointing at nothing."""
+        self.panel._testFileDir()
+        first = self.panel._testFileRoot
+        self.panel.cleanup()
+
+        second = self.panel._testFileDir()
+
+        self.assertNotEqual(second, first)
+        self.assertTrue(os.path.isdir(second))
+
+    def test_opening_a_tool_sweeps_what_an_earlier_session_left(self):
+        """On enter(), not only when someone picks a test file: a user who
+        downloaded a cohort once and did not come back would keep it for good."""
+        key = base_widget.ServerToolWidgetBase.TEST_FILE_DIR_KEY
+        stale = os.path.join(sys.modules["slicer"].app.temporaryPath,
+                             key + "2026-08-28_13+03+14.937")
+        os.makedirs(stale, exist_ok=True)
+        with open(os.path.join(stale, base_widget.ServerToolWidgetBase.OWNER_FILE), "w") as h:
+            h.write(str(2 ** 31 - 1))
+
+        # `enter()` also repaints and re-reads the server; the subject here is
+        # only that the sweep is among the things it does.
+        self.panel.uiWidget = None
+        self.panel._refreshServerSelectables = lambda: None
+        self.panel._refreshSceneVolumes = lambda: None
+        self.panel._refreshServerStatus = lambda: None
+
+        self.panel.enter()
+
+        self.assertFalse(os.path.exists(stale))
+
+    def test_cleanup_without_a_single_download_is_harmless(self):
+        self.panel.cleanup()
+        self.assertIsNone(self.panel._testFileRoot)
