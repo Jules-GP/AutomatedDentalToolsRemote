@@ -298,6 +298,16 @@ class MultiChoiceGroup:
         # multichoice of every tool and with the suggestion living server-side.
         self._defaults = dict(choices)
 
+        self._column = column
+        self._layout = layout
+        self._groups = groups
+        self._draw(choices, groups)
+
+    def _draw(self, choices: dict, groups) -> None:
+        """Lay the options out. Split from __init__ so `rebuild` can redraw a
+        group whose option set changed with the mode."""
+        layout = self._layout
+        column = self._column
         builder = _LAYOUT_BUILDERS.get(layout)
         if builder is None:
             if layout is not None:
@@ -341,6 +351,29 @@ class MultiChoiceGroup:
             row.addWidget(button)
         row.addStretch(1)
         return bar
+
+    def rebuild(self, choices: dict, groups=None) -> None:
+        """Draw this group again for a different set of options.
+
+        A facade publishes the UNION of its engines' options and says per mode
+        which apply; a combo box is narrowed by refilling it, and a check-box
+        group has to be redrawn the same way. What survives is the SELECTION:
+        an option still offered keeps its state, so switching mode and back does
+        not silently clear what the user ticked.
+        """
+        kept = {option: box.isChecked() for option, box in self.boxes.items()}
+        wanted = {option: kept.get(option, default) for option, default in choices.items()}
+        if list(self.boxes) == list(wanted) and self._groups == groups:
+            return
+
+        while self._column.count():
+            item = self._column.takeAt(0)
+            widget = item.widget() if hasattr(item, "widget") else None
+            if widget is not None:
+                widget.setParent(None)
+
+        self._groups = groups
+        self._draw(wanted, groups)
 
     def setAll(self, checked: bool) -> None:
         for box in self.boxes.values():
@@ -1400,6 +1433,30 @@ def is_visible(spec: dict, values: dict) -> bool:
         if values[other_name] not in wanted:
             return False
     return True
+
+
+def allowed_groups(spec: dict, values: dict):
+    """How this argument's options are grouped, given what the panel holds.
+
+    `groups_when` is `options_when` one level up, and it exists for the same
+    reason: a facade puts two engines behind one argument, and ALI's four
+    anatomical regions are not another spelling of its five intraoral families.
+    Without it the panel showed whichever engine the server composed first, so
+    intraoral landmarks were laid out under `Cranial base`.
+
+    None means "no rule": render `groups` as declared.
+    """
+    rules = spec.get("groups_when")
+    if not rules:
+        return None
+    for other_name, by_value in rules.items():
+        chosen = values.get(other_name)
+        if isinstance(chosen, dict):  # a multichoice controlling one is not a case
+            return None
+        groups = by_value.get(chosen)
+        if groups is not None:
+            return groups
+    return None
 
 
 def allowed_options(spec: dict, values: dict):

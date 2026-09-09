@@ -54,6 +54,10 @@ class QObject:
     def toolTip(self):
         return self._tooltip
 
+    def setParent(self, parent):
+        """`rebuild` detaches a widget this way; the stub only has to accept it."""
+        self.parent = parent
+
     def setStyleSheet(self, sheet):
         self._stylesheet = sheet
 
@@ -125,6 +129,21 @@ class QLayout(QObject):
         between links that start at the left edge of the options they act on and
         links that float at the far edge of the panel."""
         self.stretches.append(stretch)
+
+    def count(self):
+        return len(self.widgets)
+
+    def takeAt(self, index):
+        """Qt hands back an item wrapping the widget; `rebuild` empties a layout
+        through it, so the stub answers the same shape."""
+        widget = self.widgets.pop(index)
+
+        class _Item:
+            @staticmethod
+            def widget():
+                return widget
+
+        return _Item()
 
 
 class QVBoxLayout(QLayout):

@@ -1009,6 +1009,64 @@ class MultiChoiceLayoutTest(unittest.TestCase):
         self.assertEqual(len(tabs), 1)
 
 
+class FacadeGroupsTest(unittest.TestCase):
+    """A facade puts two engines behind one argument, and they do not group the
+    same options the same way. ALI's four anatomical regions are not another
+    spelling of its five intraoral families."""
+
+    SPEC = {
+        "type": "multichoice", "types": ["multichoice"], "required": False,
+        "choices": {"Ba": False, "S": False, "L0MG": False, "UR1O": False},
+        "ui": "tabs",
+        "groups": {"Cranial base": ["Ba", "S"]},
+        "options_when": {"mode": {"CBCT": ["Ba", "S"],
+                                  "Intraoral scan": ["L0MG", "UR1O"]}},
+        "groups_when": {"mode": {"CBCT": {"Cranial base": ["Ba", "S"]},
+                                 "Intraoral scan": {"Mucogingival Lower": ["L0MG"],
+                                                    "Occlusal Upper": ["UR1O"]}}},
+    }
+
+    def test_the_groups_follow_the_mode(self):
+        self.assertEqual(
+            list(formgen.allowed_groups(self.SPEC, {"mode": "Intraoral scan"})),
+            ["Mucogingival Lower", "Occlusal Upper"])
+        self.assertEqual(list(formgen.allowed_groups(self.SPEC, {"mode": "CBCT"})),
+                         ["Cranial base"])
+
+    def test_no_rule_means_render_the_declared_groups(self):
+        self.assertIsNone(formgen.allowed_groups({"groups": {"a": ["x"]}}, {}))
+
+    def test_a_mode_the_rule_does_not_name_falls_back_to_the_declared_groups(self):
+        self.assertIsNone(formgen.allowed_groups(self.SPEC, {"mode": "Something else"}))
+
+    def test_rebuilding_keeps_what_survives_and_defaults_the_rest(self):
+        """Switching mode and back must not silently clear a selection."""
+        group = formgen.MultiChoiceGroup(
+            {"Ba": False, "S": True}, "", layout="tabs", groups={"Cranial base": ["Ba", "S"]})
+        group.boxes["Ba"].setChecked(True)
+
+        group.rebuild({"Ba": False, "L0MG": True}, {"Mucogingival Lower": ["L0MG"]})
+
+        self.assertEqual(set(group.boxes), {"Ba", "L0MG"})
+        self.assertTrue(group.boxes["Ba"].isChecked(), "a surviving option keeps its state")
+        self.assertTrue(group.boxes["L0MG"].isChecked(), "a new one takes its declared default")
+
+    def test_rebuilding_with_the_same_options_redraws_nothing(self):
+        group = formgen.MultiChoiceGroup({"a": True, "b": False}, "", layout="tabs")
+        before = group.boxes["a"]
+
+        group.rebuild({"a": True, "b": False}, None)
+
+        self.assertIs(group.boxes["a"], before)
+
+    def test_the_group_still_reads_back_the_complete_state(self):
+        group = formgen.MultiChoiceGroup({"a": True, "b": False}, "", layout="tabs")
+
+        group.rebuild({"b": False, "c": True}, None)
+
+        self.assertEqual(set(group.value()), {"b", "c"})
+
+
 class LabelTest(unittest.TestCase):
     """The words a user reads are the tool's, not this file's."""
 
