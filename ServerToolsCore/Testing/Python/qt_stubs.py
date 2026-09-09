@@ -271,23 +271,45 @@ class QCheckBox(QObject):
 
 
 class _ListView:
-    """Just enough of the popup for `_widenPopup`: it sets a minimum width and
-    nothing here reads it back but the tests."""
+    """Just enough of the popup for `_widenPopup`.
+
+    `sizeHintForColumn` is what the real view answers: the width its own items
+    need. One pixel per character here -- real metrics are proportional, but the
+    property under test is "the widest entry decides", not the exact pixels.
+    """
 
     def __init__(self):
         self.minimumWidth = 0
+        self.items = []
+
+    def sizeHintForColumn(self, _column):
+        return max((len(text) for text in self.items), default=0)
 
     def setMinimumWidth(self, width):
         self.minimumWidth = width
 
 
-class _FontMetrics:
-    """One pixel per character. Real metrics are proportional, but the
-    property under test is "the widest entry decides", not the exact pixels."""
+class _Metrics:
+    """What `fontMetrics()` RETURNS. One pixel per character."""
 
     @staticmethod
     def horizontalAdvance(text):
         return len(text)
+
+
+class _FontMetricsSlot:
+    """A SLOT, exactly as PythonQt exposes it: `combo.fontMetrics` is not a
+    property, it is a callable, and reading through it without calling it gives
+    an object with no metrics on it at all.
+
+    This stub used to BE the metrics, so `combo.fontMetrics.horizontalAdvance`
+    worked here and raised `AttributeError` in Slicer -- the popup-widening code
+    was dead for as long as it existed and 728 passing tests said it was fine. A
+    stub that lies in the same direction as the binding is worse than no stub.
+    """
+
+    def __call__(self):
+        return _Metrics()
 
 
 class QComboBox(QObject):
@@ -301,7 +323,7 @@ class QComboBox(QObject):
         self.sizeAdjustPolicy = 0
         self.minimumContentsLength = 0
         self._view = _ListView()
-        self.fontMetrics = _FontMetrics()
+        self.fontMetrics = _FontMetricsSlot()
         self.currentTextChanged = Signal()
         self.currentIndexChanged = Signal()
 
@@ -311,6 +333,8 @@ class QComboBox(QObject):
     def addItems(self, items):
         self._items.extend(items)
         self._data.extend([None] * len(items))
+        # The real view measures the model it is showing; so does this one.
+        self._view.items = list(self._items)
         if self._index < 0 and self._items:
             self.setCurrentIndex(0)
 
@@ -334,6 +358,7 @@ class QComboBox(QObject):
         self._items = []
         self._data = []
         self._index = -1
+        self._view.items = []
 
     @property
     def count(self):

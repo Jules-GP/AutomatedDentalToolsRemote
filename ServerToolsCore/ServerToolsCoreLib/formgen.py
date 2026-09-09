@@ -85,6 +85,10 @@ PATH_PLACEHOLDER = "Select a file or a folder"
 # Room for the scroll bar and the item margins, so the widest entry is not
 # elided by a pixel.
 _POPUP_PADDING = 40
+# A popup may be wider than the box it drops from -- that is the whole point --
+# but not wider than the screen it drops onto. The longest entry any tool
+# publishes today measures 265 px, so this is a guard rail, not a budget.
+_POPUP_MAX_WIDTH = 720
 
 # How a volume already open in the scene appears in the input dropdown, below
 # the server-hosted test files. Selection kind is decided by index, never by
@@ -760,6 +764,7 @@ class ServerFileInput:
         self.local = local
         self._syncing = False
         self._hosted = []  # [{"name", "kind", "size"}], in server order
+        self._popup_warned = False  # the widening failure is reported once
         self._volume_names = []
         # Whether picking a hosted entry FETCHES it. True for the tool's test
         # files, which exist to be looked at. False for a hosted MODEL: the
@@ -881,28 +886,41 @@ class ServerFileInput:
             self.combo.addItems(entries)
             if previous in entries:
                 self.combo.setCurrentIndex(entries.index(previous))
-            self._widenPopup(entries)
+            self._widenPopup()
             self.combo.setToolTip(entries[0])
         finally:
             self._syncing = False
 
-    def _widenPopup(self, entries) -> None:
+    def _widenPopup(self) -> None:
         """Let the dropdown LIST show a whole entry, however narrow the box is.
 
-        `CBCT_Or_FullyAuto_DCM (folder, 532 MB)` elided to the collapsed box's
-        width reads as `CBCT_Or_Full...`, which is the same text as three of
-        its neighbours -- so the one thing the entry exists to say, what it is
-        and what it costs, is the part that gets cut. Every failure Qt can have
-        here is cosmetic, so none of them may take the panel down with it.
+        The collapsed box is deliberately narrow -- 168 px on AREG -- so that a
+        long entry cannot push the path field off the line. The open list has no
+        such excuse, and AREG offers `CBCT_FullyAuto`, `CBCT_Or_FullyAuto` and
+        `CBCT_Or_FullyAuto_DCM`: elided to the box's width all three read
+        `CBCT_Or_Full...`, and choosing between them is guesswork.
+
+        **Measured by the VIEW, never by font metrics.** `combo.fontMetrics` is
+        a SLOT under PythonQt, not a property. The previous version read it
+        without calling it, so every measurement raised `AttributeError` into a
+        bare `except` and the list was never widened once -- measured in Slicer,
+        `view.minimumWidth` stayed 0 and the open popup was 166 px wide.
+        `sizeHintForColumn` asks the view what its own items need, delegate
+        included, and touches no font API at all.
+
+        A failure here is still cosmetic and must not take the panel down. It is
+        logged as a WARNING rather than at debug, and once per widget: a silent
+        debug line is how a dead feature stayed dead through 728 passing tests.
         """
         try:
             view = self.combo.view()
-            metrics = self.combo.fontMetrics
-            widest = max((metrics.horizontalAdvance(entry) for entry in entries), default=0)
-            if widest:
-                view.setMinimumWidth(widest + _POPUP_PADDING)
+            needed = view.sizeHintForColumn(0)
+            if needed and needed > 0:
+                view.setMinimumWidth(min(needed + _POPUP_PADDING, _POPUP_MAX_WIDTH))
         except Exception:  # noqa: BLE001 - a dropdown that is merely narrow
-            logger.debug("could not widen the hosted-entry popup", exc_info=True)
+            if not self._popup_warned:
+                self._popup_warned = True
+                logger.warning("could not widen the dropdown list", exc_info=True)
 
     def _selection(self):
         """("none" | "hosted" | "volume", name) for the current entry, decided

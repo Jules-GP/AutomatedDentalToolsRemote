@@ -1001,6 +1001,41 @@ a caller has to hide *together*. An out-parameter rather than a second return
 value because the labels are created inside `build()` and a QFormLayout's label
 for a field cannot be recovered reliably across PythonQt versions.
 
+### The open list, and a PythonQt trap that made a feature dead code
+
+The collapsed box is deliberately narrow (168 px on AREG) so a long entry cannot
+push the path field off the line. The OPEN list has no such excuse, and AREG
+offers `CBCT_FullyAuto`, `CBCT_Or_FullyAuto` and `CBCT_Or_FullyAuto_DCM`: elided
+to the box's width all three read `CBCT_Or_Full...`, and choosing between them is
+guesswork. That is what `_widenPopup` exists to prevent.
+
+**It had never worked.** `combo.fontMetrics` is a SLOT under PythonQt, not a
+property; the code read it without calling it, so every measurement raised
+`AttributeError` into a bare `except` that logged at debug level. Measured in
+Slicer before the fix:
+
+    largeur boîte=168   vue=640   min=0          <- minimumWidth never set
+    après ouverture :   vue=168   viewport=166   <- the list is as narrow as the box
+
+and after:
+
+    min=305             vue=305   viewport=303   <- every entry whole
+
+`sizeHintForColumn(0)` is asked instead: the view measures its own items,
+delegate included, and no font API is touched. The result is capped by
+`_POPUP_MAX_WIDTH` — a popup may be wider than its box, that is the point, but
+not wider than a screen.
+
+**The test suite said this was fine, and the stub is why.** `qt_stubs` modelled
+`fontMetrics` as an attribute, so `combo.fontMetrics.horizontalAdvance` worked
+in the tests and raised in Slicer — a stub lying in the same direction as the
+binding is worse than no stub. It is a callable now, returning the metrics, so
+reading through it without calling it raises exactly as PythonQt does; the
+existing width test then fails against the old code, which is how it should
+always have behaved. And the failure path logs a WARNING once rather than a
+silent debug line: that line is how a dead feature stayed dead through 728
+passing tests.
+
 ### The dropdown says what is inside it
 
 Its first entry used to be the path field's own placeholder, word for word, on

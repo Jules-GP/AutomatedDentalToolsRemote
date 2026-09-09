@@ -1497,6 +1497,46 @@ class HostedEntryReadabilityTest(unittest.TestCase):
         longest = max(len(entry) for entry in widget._entries())
         self.assertGreaterEqual(widget.combo.view().minimumWidth, longest)
 
+    def test_the_width_comes_from_the_view_not_from_font_metrics(self):
+        """The trap this cost a release to find.
+
+        `combo.fontMetrics` is a SLOT under PythonQt, not a property: reading
+        through it without calling it raises `AttributeError`, which the bare
+        `except` here swallowed -- so the list was never widened once, while the
+        stub (which modelled it as a property) said it was. Measured in Slicer:
+        `view.minimumWidth` 0, open popup 166 px, three AREG cohorts reading
+        `CBCT_Or_Full...`.
+
+        The view is asked instead, and it measures its own items.
+        """
+        widget = self._input([{"name": "CBCT_Or_FullyAuto_DCM", "kind": "folder",
+                               "size": 532 * 1024 ** 2}])
+
+        # Nothing may reach for the metrics through the slot object.
+        with self.assertRaises(AttributeError):
+            widget.combo.fontMetrics.horizontalAdvance("x")
+        self.assertGreater(widget.combo.view().minimumWidth, 0)
+
+    def test_a_view_that_cannot_measure_leaves_the_panel_standing(self):
+        """Cosmetic, always: a list that is merely narrow must never be a
+        traceback in a clinician's panel."""
+        widget = self._input([{"name": "a.nii.gz", "kind": "file", "size": 1}])
+
+        def refuse(_column):
+            raise RuntimeError("no view today")
+
+        widget.combo.view().sizeHintForColumn = refuse
+        widget.setChoices([{"name": "b.nii.gz", "kind": "file", "size": 2}])
+
+        self.assertEqual(widget.combo.itemText(1), "b.nii.gz  (file, 2 B)")
+
+    def test_the_popup_is_bounded(self):
+        """Wider than its box, never wider than a screen."""
+        widget = self._input([{"name": "x" * 4000, "kind": "file", "size": 1}])
+
+        self.assertLessEqual(widget.combo.view().minimumWidth,
+                             formgen._POPUP_MAX_WIDTH)
+
     def test_the_collapsed_box_stays_narrow(self):
         """The row still has to fit: only the LIST grows."""
         widget = self._input([{"name": "x" * 120, "kind": "file", "size": 1}])
