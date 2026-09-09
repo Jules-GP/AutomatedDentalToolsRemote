@@ -84,11 +84,6 @@ class GreedyRegWidget(ServerToolWidgetBase):
     # NAME chosen from what the server hosts, and the client renders that with
     # no change here either. Nothing in this file has to know which it is.
 
-    # No TEST_DATA: the upstream module ships no test-file button for
-    # registration, and there is no published T1/T2 pair to point at. The
-    # server-hosted testfiles dropdown still appears on any argument the
-    # deployment marks selectable.
-
     # No RESULT_KIND: output_kind "files" is one registered volume and its
     # transform per pair, plus GreedyReg_report.json, bundled into one .zip and
     # unpacked into the output folder the user picks.

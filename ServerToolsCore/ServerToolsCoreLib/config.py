@@ -17,6 +17,27 @@ TIMEOUT = 600
 # it changes little and costs nothing. Set to 1 to go back to one stream.
 TRANSFER_PARALLELISM = 4
 
+# How many runs of ONE tool may be in flight at once from a single panel.
+# Apply always queues rather than refusing, so this only decides how much of the
+# queue moves together.
+#
+# It is not a speed multiplier. The server serialises the card
+# (MAX_CONCURRENT_GPU_JOBS = 1), so four segmentations still segment one at a
+# time; what overlapping buys is the transfer of the next patient during the
+# inference of the current one, which on a cohort of large CBCTs is most of the
+# wall clock. It also lets a CPU tool run beside a GPU one.
+#
+# 1 is the default and the shape a panel is expected to have: ONE run of a tool
+# at a time, extra clicks waiting their turn. Different tools are unaffected --
+# each panel keeps its own queue, so AMASSS and ALI still run side by side.
+#
+# Raise it to overlap the transfer of the next patient with the inference of the
+# current one, which on a cohort of large CBCTs is most of the wall clock. Keep
+# it well under 4: the server admits MAX_CONCURRENT_TOOLS = 4 in total across
+# every panel and every client, so spending them all from one panel would make
+# another module's run wait behind this one's cohort.
+CONCURRENT_RUNS = 1
+
 # Size of one part, in megabytes. The server clamps this to [1, 64] and answers
 # with what it actually used. Smaller parts recover faster from a dropped
 # connection; larger ones amortise the per-request overhead.

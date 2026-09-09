@@ -26,9 +26,9 @@ from ServerToolsCoreLib.client import (
     _TOOLS_FETCH_TIMEOUT,
     accepts_folder,
     argument_types,
-    download_file,
     file_extensions_for,
     is_file_type,
+    testfile_entries,
 )
 from ServerToolsCoreLib.errors import ServerToolError
 
@@ -200,7 +200,16 @@ class ToolServerClientTest(unittest.TestCase):
 
         data = self.client.list_tool_data("SurgMovPred")
 
-        self.assertEqual(data, {"models": ["stacking_v1.zip", "stacking_v2.zip"], "testfiles": ["demo.zip"]})
+        self.assertEqual(
+            data,
+            {
+                "models": ["stacking_v1.zip", "stacking_v2.zip"],
+                "testfiles": ["demo.zip"],
+                # {} rather than absent, so no caller has to ask which server
+                # version it is talking to.
+                "entries": {},
+            },
+        )
         args, kwargs = mock_get.call_args
         self.assertEqual(args[0], "https://example.org/tools/SurgMovPred/data")
         # The endpoint is Bearer-protected, unlike /tools.
@@ -213,7 +222,25 @@ class ToolServerClientTest(unittest.TestCase):
     def test_list_tool_data_tolerates_missing_keys(self, mock_get):
         mock_get.return_value = _response(json_data={})
 
-        self.assertEqual(self.client.list_tool_data("SurgMovPred"), {"models": [], "testfiles": []})
+        self.assertEqual(
+            self.client.list_tool_data("SurgMovPred"),
+            {"models": [], "testfiles": [], "entries": {}},
+        )
+
+    @mock.patch("requests.Session.get")
+    def test_list_tool_data_passes_the_described_entries_through(self, mock_get):
+        """The richer half of the payload: a name, what it is, and how big.
+        Passed through verbatim -- shaping it is testfile_entries' job."""
+        entries = {"models": [], "testfiles": [
+            {"name": "CBCT_FullyAuto", "kind": "folder", "size": 355640000}
+        ]}
+        mock_get.return_value = _response(
+            json_data={"models": [], "testfiles": ["CBCT_FullyAuto"], "entries": entries}
+        )
+
+        data = self.client.list_tool_data("AREG")
+
+        self.assertEqual(data["entries"], entries)
 
     @mock.patch("requests.Session.get")
     def test_list_tool_data_network_error_wrapped(self, mock_get):
@@ -1426,21 +1453,79 @@ class BulkTransferWiringTest(unittest.TestCase):
         self.assertEqual(result.text, "42")
 
 
-class DownloadFileTest(unittest.TestCase):
-    """download_file: the GitHub test-data fetch base_widget drives. Not part
-    of ToolServerClient on purpose (no server URL, no token) but tested here
-    like the rest of the module, requests mocked."""
+class TestfileEntriesTest(unittest.TestCase):
+    """`GET /tools/{tool}/data` answers in two shapes, and both have to work:
+    a current server describes each test file, an older one lists names only."""
 
-    URL = "https://github.com/example/releases/download/v1/MG_test_scan.nii.gz"
+    def test_described_entries_carry_their_kind_and_size(self):
+        data = {
+            "testfiles": ["CBCT_FullyAuto", "ROI_box.mrk.json"],
+            "entries": {"testfiles": [
+                {"name": "CBCT_FullyAuto", "kind": "folder", "size": 355640000},
+                {"name": "ROI_box.mrk.json", "kind": "file", "size": 2969},
+            ]},
+        }
+
+        self.assertEqual(
+            testfile_entries(data),
+            [
+                {"name": "CBCT_FullyAuto", "kind": "folder", "size": 355640000},
+                {"name": "ROI_box.mrk.json", "kind": "file", "size": 2969},
+            ],
+        )
+
+    def test_a_server_publishing_only_names_still_yields_entries(self):
+        entries = testfile_entries({"testfiles": ["demo.zip"]})
+        self.assertEqual(entries, [{"name": "demo.zip", "kind": None, "size": None}])
+
+    def test_an_unsizeable_entry_is_unknown_and_not_zero(self):
+        """A backend that cannot size a tree cheaply sends null, and 0 would be
+        indistinguishable from an empty folder."""
+        data = {
+            "testfiles": ["cohort"],
+            "entries": {"testfiles": [{"name": "cohort", "kind": "folder", "size": None}]},
+        }
+        self.assertEqual(testfile_entries(data)[0]["size"], None)
+
+    def test_junk_in_the_described_half_never_costs_an_entry(self):
+        """The seam between two repositories: a field the other side changes
+        must not empty the picker."""
+        data = {
+            "testfiles": ["demo.zip"],
+            "entries": {"testfiles": [
+                "not a dict",
+                {"name": "demo.zip", "kind": "directory", "size": "big"},
+            ]},
+        }
+        self.assertEqual(
+            testfile_entries(data), [{"name": "demo.zip", "kind": None, "size": None}]
+        )
+
+    def test_the_flat_list_decides_which_names_exist(self):
+        """An entry the server does not also list is not offered: the name is
+        what a download would ask for, and it has to be one the server serves."""
+        data = {
+            "testfiles": ["demo.zip"],
+            "entries": {"testfiles": [
+                {"name": "demo.zip", "kind": "file", "size": 1},
+                {"name": "ghost.zip", "kind": "file", "size": 1},
+            ]},
+        }
+        self.assertEqual([entry["name"] for entry in testfile_entries(data)], ["demo.zip"])
+
+
+class DownloadTestFileTest(unittest.TestCase):
+    """`download_testfile`: the tool's own hosted test data, fetched so the
+    user can open it beside the panel. Bearer-protected, and pulled over
+    parallel ranges when the server offers them."""
 
     def setUp(self):
-        self.work = tempfile.mkdtemp(prefix="download_test_")
+        self.client = ToolServerClient("https://example.org/", "secret-token")
+        self.work = tempfile.mkdtemp(prefix="testfile_download_")
         self.addCleanup(shutil.rmtree, self.work, True)
         self.destination = os.path.join(self.work, "MG_test_scan.nii.gz")
-        # download_file probes for range support before choosing how to fetch.
-        # Stubbed to "no ranges" by default so these tests keep covering the
-        # sequential path -- and, more importantly, so none of them can reach
-        # the network. The ranged path has its own tests below.
+        # No ranges by default, so these cover the sequential path -- and, more
+        # importantly, so none of them can reach the network.
         self._head = mock.patch.object(
             requests.Session, "head", return_value=self._head_response(None)
         )
@@ -1459,28 +1544,41 @@ class DownloadFileTest(unittest.TestCase):
     def _streaming_response(self, chunks, headers=None, status=200):
         response = mock.MagicMock()
         response.status_code = status
+        response.ok = 200 <= status < 300
         response.headers = headers or {}
         response.iter_content = lambda chunk_size: iter(chunks)
         response.__enter__.return_value = response
         response.__exit__.return_value = False
-        if status >= 400:
-            response.raise_for_status.side_effect = requests.HTTPError(f"{status} error")
-        else:
-            response.raise_for_status.return_value = None
+        response.json.side_effect = ValueError("no json body")
         return response
 
-    def test_streams_the_body_to_the_destination(self):
+    def test_streams_the_body_to_the_destination_with_the_token(self):
         response = self._streaming_response([b"abc", b"def"])
 
         with mock.patch.object(requests.Session, "get", return_value=response) as get:
-            result = download_file(self.URL, self.destination)
+            result = self.client.download_testfile(
+                "AMASSS", "MG_test_scan.nii.gz", self.destination
+            )
 
         self.assertEqual(result, self.destination)
         with open(self.destination, "rb") as handle:
             self.assertEqual(handle.read(), b"abcdef")
-        # stream=True is what keeps a 100 MB scan out of Slicer's RAM.
+        self.assertEqual(
+            get.call_args.args[0], "https://example.org/tools/AMASSS/testfiles/MG_test_scan.nii.gz"
+        )
+        self.assertEqual(get.call_args.kwargs["headers"]["Authorization"], "Bearer secret-token")
+        # stream=True is what keeps a 648 MB cohort out of Slicer's RAM.
         self.assertTrue(get.call_args.kwargs.get("stream"))
-        self.assertEqual(get.call_args.args[0], self.URL)
+
+    def test_a_name_is_escaped_into_the_path_rather_than_read_as_one(self):
+        response = self._streaming_response([b""])
+
+        with mock.patch.object(requests.Session, "get", return_value=response) as get:
+            self.client.download_testfile("AMASSS", "a b/c.nii.gz", self.destination)
+
+        self.assertEqual(
+            get.call_args.args[0], "https://example.org/tools/AMASSS/testfiles/a%20b%2Fc.nii.gz"
+        )
 
     def test_progress_reports_percentages_from_content_length(self):
         response = self._streaming_response(
@@ -1489,27 +1587,59 @@ class DownloadFileTest(unittest.TestCase):
         messages = []
 
         with mock.patch.object(requests.Session, "get", return_value=response):
-            download_file(self.URL, self.destination, progress_cb=messages.append)
+            self.client.download_testfile(
+                "AMASSS", "MG_test_scan.nii.gz", self.destination, progress_cb=messages.append
+            )
 
         self.assertEqual(len(messages), 2)
         self.assertIn("(50%)", messages[0])
         self.assertIn("(100%)", messages[1])
-        # The label is the file being fetched, not the tool-run wording.
+        # The label names the file being fetched, not the tool-run wording.
         self.assertIn("MG_test_scan.nii.gz", messages[0])
 
-    def test_an_http_error_raises_and_writes_nothing(self):
+    def test_an_error_status_is_a_ServerToolError_not_a_raw_HTTPError(self):
+        """The panel shows the message verbatim; a 404 here means the server
+        no longer hosts that name, which is worth saying."""
         response = self._streaming_response([], status=404)
 
         with mock.patch.object(requests.Session, "get", return_value=response):
-            with self.assertRaises(requests.HTTPError):
-                download_file(self.URL, self.destination)
+            with self.assertRaises(ServerToolError) as caught:
+                self.client.download_testfile("AMASSS", "gone.nii.gz", self.destination)
 
+        self.assertEqual(caught.exception.status_code, 404)
         self.assertFalse(os.path.exists(self.destination))
 
+    def test_a_big_file_goes_over_parallel_ranges(self):
+        """The same path a large result takes (`_download_reference`): one
+        connection is bound by its own congestion window, and these are
+        hundreds of megabytes."""
+        size = transfer.MIN_CHUNKED_BYTES + 1
+        with mock.patch.object(
+            requests.Session, "head", return_value=self._head_response(size)
+        ):
+            with mock.patch.object(
+                transfer, "download_ranged", return_value=self.destination
+            ) as ranged:
+                self.client.download_testfile(
+                    "AREG", "CBCT_SemiAuto_DCM", self.destination
+                )
 
-if __name__ == "__main__":
-    unittest.main()
+        self.assertEqual(ranged.call_args.args[2], self.destination)
+        self.assertEqual(ranged.call_args.args[3], size)
+        self.assertEqual(
+            ranged.call_args.kwargs["headers"]["Authorization"], "Bearer secret-token"
+        )
 
+    def test_a_small_file_is_not_worth_a_parallel_plan(self):
+        response = self._streaming_response([b"x"])
+        with mock.patch.object(
+            requests.Session, "head", return_value=self._head_response(1024)
+        ):
+            with mock.patch.object(transfer, "download_ranged") as ranged:
+                with mock.patch.object(requests.Session, "get", return_value=response):
+                    self.client.download_testfile("AMASSS", "small.nii.gz", self.destination)
+
+        ranged.assert_not_called()
 
 class ToolNameSpellingTest(unittest.TestCase):
     """A rename that only moved separators must not read as a missing tool.
@@ -1534,3 +1664,7 @@ class ToolNameSpellingTest(unittest.TestCase):
             self.client.get_tool_schema("AREG")
         self.assertIn("Unknown tool 'AREG'", str(caught.exception))
         self.assertIn("Surg_Mov_Pred", str(caught.exception))
+
+
+if __name__ == "__main__":
+    unittest.main()

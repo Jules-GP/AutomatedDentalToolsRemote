@@ -15,10 +15,12 @@ import json
 import logging
 import mimetypes
 import os
+import time
 import re
 import zipfile
 from dataclasses import dataclass
 from typing import Callable, Optional
+from urllib.parse import quote
 
 import requests
 
@@ -214,6 +216,51 @@ def file_extensions_for(spec: dict) -> tuple:
     return tuple(extensions)
 
 
+# The two shapes GET /tools/{tool}/data can answer with for its test files.
+# `entries` is what a current server publishes -- a name, a `kind`
+# ("file"/"folder") and a `size` in bytes; `testfiles` is the flat list of
+# names every server has always sent. Both are read, so a panel built against
+# the richer one keeps working against a server that only sends the older.
+TESTFILE_KINDS = ("file", "folder")
+
+
+def testfile_entries(data: dict) -> list:
+    """`[{"name": str, "kind": str|None, "size": int|None}, ...]` for the test
+    files a tool hosts, from a `list_tool_data` payload.
+
+    `kind` and `size` are what let a picker say "folder, 339 MB" before
+    fetching 339 MB, and BOTH may legitimately be absent: an older server
+    publishes no `entries` at all, and a data-store backend that cannot size a
+    tree cheaply sends `null`. Absent is therefore never an error and never a
+    zero -- it is "unknown", which a caller renders as nothing rather than as
+    "0 B".
+
+    The flat `testfiles` list stays authoritative for WHICH names exist: it is
+    the field every server sends, and an entry it does not mention is dropped
+    rather than offered as a name the run endpoint would not resolve.
+    """
+    names = list(data.get("testfiles") or [])
+    described = {}
+    for entry in (data.get("entries") or {}).get("testfiles") or []:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        if name:
+            described[name] = entry
+
+    entries = []
+    for name in names:
+        entry = described.get(name, {})
+        kind = entry.get("kind")
+        size = entry.get("size")
+        entries.append({
+            "name": name,
+            "kind": kind if kind in TESTFILE_KINDS else None,
+            "size": size if isinstance(size, int) and size >= 0 else None,
+        })
+    return entries
+
+
 def _pooled_session() -> requests.Session:
     """One Session for every call this client makes, instead of a fresh
     connection per request.
@@ -355,13 +402,19 @@ class ToolServerClient:
         raise ServerToolError(f"Unknown tool '{tool_name}'. Available: {available}")
 
     def list_tool_data(self, tool_name: str) -> dict:
-        """Return {"models": [...], "testfiles": [...]} - the file names hosted
-        on the server for this tool (GET /tools/{tool}/data, Bearer-protected).
+        """Return {"models": [...], "testfiles": [...], "entries": {...}} - what
+        the server hosts for this tool (GET /tools/{tool}/data, Bearer-protected).
 
         This is what lets a server_selectable argument (e.g. SurgMovPred's
         "model") be offered as a dropdown of server-side choices instead of a
         local file picker. Not cached: called once per module setup(), and the
         server-side list can change independently of the /tools schema.
+
+        `entries` is the richer half, added by a later server: the same names
+        with a `kind` ("file"/"folder") and a `size` in bytes, so a test-file
+        picker can say what it is about to fetch. Passed through verbatim and
+        normalised by `testfile_entries`, which also covers a server that sends
+        only the flat name lists.
         """
         try:
             response = self._session.get(
@@ -385,7 +438,127 @@ class ToolServerClient:
             "GET %s/tools/%s/data -> %d model(s), %d testfile(s)",
             self._server_url, tool_name, len(data.get("models", [])), len(data.get("testfiles", [])),
         )
-        return {"models": data.get("models", []), "testfiles": data.get("testfiles", [])}
+        entries = data.get("entries")
+        return {
+            "models": data.get("models", []),
+            "testfiles": data.get("testfiles", []),
+            # {} rather than None for an older server, so every caller can
+            # index it without asking which server it is talking to.
+            "entries": entries if isinstance(entries, dict) else {},
+        }
+
+    def download_testfile(
+        self,
+        tool_name: str,
+        filename: str,
+        destination: str,
+        progress_cb: Optional[Callable[[str], None]] = None,
+    ) -> str:
+        """Fetch one of the tool's server-hosted test files to `destination`.
+
+        `GET /tools/{tool}/testfiles/{name}`, Bearer-protected. A hosted
+        *folder* arrives as a .zip the server builds for us; unpacking it is
+        the caller's business, this only moves the bytes.
+
+        Pulled over parallel byte ranges, the same path a large result takes
+        (`_download_reference`): these are whole cohorts -- the CBCT
+        semi-automated set is 648 MB -- and one connection is bound by its own
+        congestion window long before it is bound by the link. Falls back to a
+        single streamed read when the server does not advertise ranges, so it
+        is safe against any server that serves the endpoint at all.
+        """
+        # quote with no safe characters: the name comes from the server's own
+        # listing, but it lands in a URL path and a stray "/" or "?" in it must
+        # address the same file rather than a different route.
+        url = f"{self._server_url}/tools/{tool_name}/testfiles/{quote(filename, safe='')}"
+        headers = {"Authorization": f"Bearer {self._token}"}
+        label = f"Downloading {filename}..."
+
+        # Timed in three pieces, because "the download took sixteen seconds"
+        # can mean the HEAD, the transfer, or the disk, and only one of the
+        # three is worth optimising. Measured against curl on the same file the
+        # server answers in 0.17 s.
+        probe_started = time.perf_counter()
+        size = transfer.probe_ranged(
+            self._session, url, headers=headers, verify_tls=self._verify_tls
+        )
+        probe_took = time.perf_counter() - probe_started
+        if size and size >= transfer.MIN_CHUNKED_BYTES:
+            body_started = time.perf_counter()
+            streams = self._parallelism
+            transfer.download_ranged(
+                self._session,
+                url,
+                destination,
+                size,
+                headers=headers,
+                verify_tls=self._verify_tls,
+                parallelism=streams,
+                chunk_bytes=self._chunk_bytes,
+                progress_cb=progress_cb,
+                label=label,
+            )
+            body_took = time.perf_counter() - body_started
+            parts = sorted(transfer.last_part_times)
+            spread = ""
+            if parts:
+                spread = "; {} parts, fastest {:.2f}s, median {:.2f}s, slowest {:.2f}s".format(
+                    len(parts), parts[0], parts[len(parts) // 2], parts[-1]
+                )
+            print(
+                "[transfer] {} ranged {} stream(s), {:.1f} MB: probe {:.2f}s, "
+                "body {:.2f}s = {:.1f} MB/s{}".format(
+                    filename, streams, size / 1048576,
+                    probe_took, body_took, size / 1048576 / max(body_took, 1e-9),
+                    spread,
+                )
+            )
+            logger.info(
+                "GET %s -> %d byte(s) saved to %s (ranged, %d stream(s), "
+                "probe %.2fs, body %.2fs)",
+                url, size, destination, streams, probe_took, body_took,
+            )
+            return destination
+
+        # The sequential fallback. Which of the two paths ran is the first
+        # thing anyone asks when a transfer is slow, and until this print the
+        # log said nothing at all when it was this one.
+        body_started = time.perf_counter()
+        try:
+            response = self._session.get(
+                url,
+                headers=headers,
+                stream=True,
+                timeout=self._timeout,
+                verify=self._verify_tls,
+            )
+        except requests.RequestException as exc:
+            raise ServerToolError(f"Could not reach the tool server: {exc}") from exc
+
+        with response:
+            if not response.ok:
+                raise error_for_status(response.status_code, self._server_message(response))
+            expected = self._expected_length(response) or 0
+            received = 0
+            with open(destination, "wb") as out_file:
+                for chunk in response.iter_content(chunk_size=_DOWNLOAD_CHUNK_BYTES):
+                    out_file.write(chunk)
+                    received += len(chunk)
+                    if progress_cb:
+                        progress_cb(_download_message(received, expected, filename))
+        body_took = time.perf_counter() - body_started
+        print(
+            "[transfer] {} sequential (probe said {}), {:.1f} MB: probe {:.2f}s, "
+            "body {:.2f}s = {:.1f} MB/s".format(
+                filename, size if size else "no ranges", received / 1048576,
+                probe_took, body_took, received / 1048576 / max(body_took, 1e-9),
+            )
+        )
+        logger.info(
+            "GET %s -> %d byte(s) saved to %s (sequential, probe %.2fs, body %.2fs)",
+            url, received, destination, probe_took, body_took,
+        )
+        return destination
 
     def _fetch_tools(self) -> dict:
         try:
@@ -876,50 +1049,3 @@ class ToolServerClient:
                     raise ServerToolError(f"Missing required file argument '{name}' for tool '{tool_name}'.")
             elif spec.get("required") and name not in args:
                 raise ServerToolError(f"Missing required argument '{name}' for tool '{tool_name}'.")
-
-def download_file(url: str, destination: str, progress_cb: Optional[Callable] = None,
-                  timeout: int = 600) -> str:
-    """Stream the file at `url` (a GitHub release asset holding the original
-    extension's test data) to `destination`, reporting progress.
-
-    Module-level rather than a ToolServerClient method on purpose: the URL is
-    not the tool server and no token travels with the request. It lives in
-    this file because client.py is the one module allowed to speak HTTP
-    (ARCHITECTURE.md dependency rule); base_widget runs it on a BackgroundJob
-    and owns what happens to the payload afterwards.
-
-    Pulled in parallel ranges when the host supports them, which a GitHub
-    release asset does: these archives run to hundreds of MB and the single
-    stream that used to fetch them was the same congestion-window bottleneck
-    that made uploads slow. Falls back to the plain sequential read for any
-    host that does not advertise `Accept-Ranges`.
-    """
-    logger.info("Downloading %s -> %s", url, destination)
-    label = os.path.basename(destination)
-    session = _pooled_session()
-
-    size = transfer.probe_ranged(session, url)
-    if size and size >= transfer.MIN_CHUNKED_BYTES:
-        return transfer.download_ranged(
-            session,
-            url,
-            destination,
-            size,
-            progress_cb=progress_cb,
-            label=f"Downloading {label}...",
-        )
-
-    with session.get(url, stream=True, timeout=timeout) as response:
-        response.raise_for_status()
-        try:
-            expected = int(response.headers.get("Content-Length") or 0)
-        except (TypeError, ValueError):
-            expected = 0
-        received = 0
-        with open(destination, "wb") as out_file:
-            for chunk in response.iter_content(chunk_size=_DOWNLOAD_CHUNK_BYTES):
-                out_file.write(chunk)
-                received += len(chunk)
-                if progress_cb:
-                    progress_cb(_download_message(received, expected, label))
-    return destination

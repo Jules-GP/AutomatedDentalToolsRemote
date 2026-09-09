@@ -4,8 +4,8 @@
 Two things are covered, and they fail for different reasons:
 
 * **What AREG's panel derives from its schema.** AREG declares nothing but
-  TOOL_NAME (and the test-data URL), so every widget, every extension filter
-  and the result handling come from `GET /tools`. These tests assert that the
+  TOOL_NAME, so every widget, every extension filter and the result handling
+  come from `GET /tools`. These tests assert that the
   schema really does answer all of it — if the server's schema changes shape,
   this is what notices, and they are also what would catch someone "helpfully"
   re-adding a FILE_INPUTS or RESULT_KIND override that only repeats the server.
@@ -104,6 +104,11 @@ def _load_areg_module():
 
 
 AREGWidget = _load_areg_module().AREGWidget
+
+
+def _module_source() -> str:
+    with open(os.path.join(_REPO_ROOT, "AREG", "AREG.py"), encoding="utf-8") as handle:
+        return handle.read()
 
 
 # The server's actual GET /tools payload for AREG, verbatim. Kept here as a
@@ -484,9 +489,13 @@ class DeclarationTest(unittest.TestCase):
         self.assertIsNone(AREGWidget.RESULT_KIND)
         self.assertTrue(AREGWidget.AUTO_UI)
 
-    def test_the_test_data_button_points_at_an_argument_that_exists(self):
-        for name in AREGWidget.TEST_DATA:
-            self.assertIn(name, _ARGUMENTS)
+    def test_the_module_declares_no_test_data_of_its_own(self):
+        """AREG used to carry a TEST_DATA dict of hardcoded GitHub release
+        URLs. A tool's test data is what the SERVER hosts for it now, offered
+        in the input row itself - so every tool has it and no module declares
+        anything."""
+        self.assertFalse(hasattr(AREGWidget, "TEST_DATA"))
+        self.assertNotIn("TEST_DATA", _module_source())
 
 
 class SchemaDrivenPanelTest(unittest.TestCase):
@@ -716,11 +725,6 @@ class ResultDiscoveryTest(unittest.TestCase):
         self._write("CB/P1_CB_Reg.nii.gz")
         self.assertEqual(len(AREGWidget._findResults(self.dir)), 1)
 
-
-if __name__ == "__main__":
-    unittest.main()
-
-
 # ---------------------------------------------------------------------------
 # What Apply waits for
 # ---------------------------------------------------------------------------
@@ -892,3 +896,7 @@ class PrepareInputFilesTest(unittest.TestCase):
         files = self.panel.prepareInputFiles(self.workspace)
         self.assertEqual(sorted(files), ["mgl_landmarks", "t1", "t2"])
         self.assertTrue(all(os.path.exists(path) for path in files.values()))
+
+
+if __name__ == "__main__":
+    unittest.main()

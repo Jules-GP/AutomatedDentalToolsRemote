@@ -26,6 +26,8 @@ SlicerAutomatedDentalTools/
 │   ├── Testing/Python/test_transfer.py     # chunked upload / ranged download, against a real socket
 │   ├── Testing/Python/test_formgen.py      # plain unittest, qt/ctk/slicer stubbed, no Slicer needed
 │   ├── Testing/Python/test_joystick.py     # the 2D pad's value/geometry logic, same stubs
+│   ├── Testing/Python/test_hosted_test_files.py  # picking a tool's hosted test file: the
+│   │                                        # download, the cache, the unpacking, the scene
 │   ├── Testing/Python/qt_stubs.py          # the stand-ins test_formgen/test_joystick run against
 │   └── ServerToolsCoreLib/                 # the importable Python package
 │       ├── __init__.py                     # get_client() + ToolServerClient/ToolResult/ServerToolError
@@ -107,7 +109,7 @@ since `client.py` has no Slicer dependency to avoid).
 
 ## Tests
 
-Three plain-unittest suites, all registered as ctests and all runnable with
+Plain-unittest suites, all registered as ctests and all runnable with
 `python3 -m unittest` from their own `Testing/Python/` folder — no Slicer
 interpreter launch:
 
@@ -141,6 +143,14 @@ interpreter launch:
   mapping, clamping, and the gesture handlers' arithmetic (absolute and
   spring-back drags, wheel, arrows). Painting is not exercised, there is no
   real Qt to paint with.
+- **`test_hosted_test_files.py`** — what happens when a user picks one of a
+  tool's server-hosted test files: the download, the session cache, a hosted
+  folder unpacked, and what does and does not reach the MRML scene. Same
+  stubs plus the handful of `slicer.util` functions that path touches, and a
+  `BackgroundJob` stand-in that runs the task on a **real** worker thread and
+  delivers it when the test says so — because "this must never block the
+  Slicer window" is the property under test, and a synchronous fake could not
+  show it.
 
 ## How the pieces fit together
 
@@ -252,22 +262,34 @@ interpreter launch:
     filtered by the server's global `ALLOWED_EXTENSIONS`, which accepts a
     `.nii.gz` but will not offer it; that is a gap to fix in the tool's
     `layout.py`, not here.
-- `list_tool_data(tool_name)` → `{"models": [...], "testfiles": [...]}` — the
-  file names hosted server-side for this tool (`GET /tools/{tool}/data`,
-  Bearer-protected unlike `/tools`). Backs the server-selectable dropdowns
-  (see `formgen.py` / `base_widget.py` below). Not cached: fetched once per
-  module `setup()`, since the server-side list can change independently of
-  the `/tools` schema. Uses `_TOOLS_FETCH_TIMEOUT`, same rationale as the
-  schema fetch.
-- `download_file(url, destination, progress_cb=None)`, module-level and not a
-  `ToolServerClient` method on purpose: it fetches a GitHub release asset
-  (the original extension's test data, see `base_widget.TEST_DATA`), so no
-  server URL and no token are involved. It lives in this file because
-  client.py is the one module allowed to speak HTTP. Pulled over parallel
-  ranges when the host advertises `Accept-Ranges` (a GitHub release asset
-  does) and streamed sequentially otherwise, these archives run to hundreds
-  of MB and were hitting the same single-connection ceiling as everything
-  else. Same progress-message shape either way.
+- `list_tool_data(tool_name)` → `{"models": [...], "testfiles": [...],
+  "entries": {...}}` — what the server hosts for this tool
+  (`GET /tools/{tool}/data`, Bearer-protected unlike `/tools`). Backs the
+  server-selectable dropdowns (see `formgen.py` / `base_widget.py` below). Not
+  cached: fetched once per module `setup()`, since the server-side list can
+  change independently of the `/tools` schema. Uses `_TOOLS_FETCH_TIMEOUT`,
+  same rationale as the schema fetch.
+
+  `entries` is the richer half a later server added: the same names with a
+  `kind` (`"file"`/`"folder"`) and a `size` in bytes, so the picker can say
+  what a click is about to cost. `client.testfile_entries(data)` normalises
+  both shapes into `[{"name", "kind", "size"}]` — an older server publishing
+  names only yields `kind`/`size` of `None`, and a backend that cannot size a
+  tree cheaply sends `null` for one entry. **Absent is never zero**: unknown
+  renders as nothing rather than as `0 B`. The flat `testfiles` list stays
+  authoritative for which names exist, since it is the field every server
+  sends.
+- `download_testfile(tool_name, filename, destination, progress_cb=None)` —
+  one of the tool's hosted test files, from
+  `GET /tools/{tool}/testfiles/{name}` with the Bearer token. A hosted
+  *folder* arrives as a `.zip` the server builds; unpacking is the caller's
+  business. Pulled over parallel byte ranges (`transfer.download_ranged`,
+  the same path `_download_reference` takes for a large result) when the
+  server advertises `Accept-Ranges`, streamed sequentially otherwise — the
+  semi-automated CBCT set is 648 MB, and one connection is bound by its own
+  congestion window long before it is bound by the link. **Models are
+  deliberately not fetchable**: the server declines to stream one, weights
+  being selected by name and used in place.
 - `run(tool_name, args=None, files=None, output_dir=None, progress_cb=None)`
   → `ToolResult(kind="text"|"file", text=..., path=...)`. `files` is
   `{schema_argument_name: local_file_path}` — **there is no single reserved
@@ -417,7 +439,6 @@ class SurgMovPredWidget(ServerToolWidgetBase):
     TOOL_NAME   = "SurgMovPred"
     FILE_INPUTS = {"input": "folder_zip"}   # schema says zip_file; we want a folder picker
     RESULT_KIND = "save_as"                 # output_kind "file" doesn't say what to do with it
-    TEST_DATA   = {"input": "https://..."}  # optional: inline "Test data" download button
     AUTO_UI     = True                      # False → override buildCustomUI()
 ```
 
@@ -433,11 +454,66 @@ What is derived, and what a module still has to say:
 | offer a folder picker for an argument the server types as a plain zip | **no** — an ergonomics choice (`SurgMovPred`) |
 | leave an optional file argument out of the panel (`"none"`) | **no** — a module's decision |
 | offer the scene's open volumes in the input dropdown | **yes**: any file argument `formgen.accepts_volume` says yes to (volume-ish type name or a published volume extension) |
-| a "Test data" download button on an input row (`TEST_DATA`) | **no**: the URL is the original extension's GitHub release, which the server knows nothing about |
+| offer the tool's test data on an input row | **yes**: `server_selectable: "testfile"`, listed by `GET /tools/{tool}/data`. No module declares anything — `TEST_DATA` is gone |
 
 This is what keeps "add a field to a tool = zero client-side lines" true for
 *file* arguments too, not just scalar ones: a new file argument server-side
 appears in the panel with the right picker, unannounced.
+
+### Several runs from one panel: `_Run`, and the admission limit
+
+A panel used to hold one `_job`, and Apply hid itself behind Cancel until it
+finished. That is the wrong shape for the wait a clinician actually has, which
+is a **cohort**: the upload of the next patient has no reason to sit behind the
+inference of the previous one. `onApplyButton` now appends a `_Run` — its own
+inputs, its own `TempWorkspace`, its own thread — and `_pumpRuns` starts as many
+as `config.CONCURRENT_RUNS` allows. Apply stays available; clicking it again
+queues.
+
+**The default is one run at a time per tool**, which is the shape a panel is
+expected to have — a panel running two of the same tool at once is not what a
+panel looks like. What changed against the old behaviour is only that a second
+Apply *waits its turn* instead of being refused.
+
+**Different tools are unaffected, and that needs no setting.** Each panel holds
+its own `_runs`, so AMASSS and ALI run side by side; the cap that applies there
+is the server's `MAX_CONCURRENT_TOOLS`, not anything on this side. Measured from
+one Slicer session: four runs started together, `3.7x overlap`.
+
+**One mechanism serves both shapes, and the only thing between them is the
+number.** Raising `CONCURRENT_RUNS` lets N runs of one tool be in flight, which
+is worth doing for a cohort — the transfer of the next patient overlaps the
+inference of the current one. Keep it well under 4: the server admits
+`MAX_CONCURRENT_TOOLS = 4` **in total** across every panel and every client, so
+spending them all from one panel would make another module's run queue behind
+this one's cohort.
+
+**It is not a speed multiplier, and the docstrings say so.** The server
+serialises the card (`MAX_CONCURRENT_GPU_JOBS = 1`), so four segmentations still
+segment one at a time. What overlapping buys is the transfer of the next patient
+during the inference of the current one — on a cohort of 94 MB CBCTs, most of
+the wall clock — plus genuine parallelism across tools that do not both want the
+GPU.
+
+Four properties are worth more than the mechanism, and each has a test that
+fails without it (`test_runs.py`, verified by mutation):
+
+- **The inputs are read at Apply time, never at start time.** A run that starts
+  three minutes later because two were ahead of it must not pick up whatever the
+  pickers hold by then — that would run patient 3's scan under patient 1's
+  request, successfully, and say nothing.
+- **One scratch directory per run.** Two runs sharing one temp folder would
+  overwrite each other's inputs; finishing a run closes its own and no other.
+- **A failure costs one run.** The rest of the cohort goes on, and the queue
+  advances past it.
+- **Each callback binds its own run** (`lambda ..., run=run:`). Without that,
+  every progress line would report against whichever run was queued last.
+
+The progress label carries one line per run, and **a single run reads exactly as
+it always did** — no run number, no label. The prefix appears only once there is
+something to tell apart, which is the overwhelmingly common case left alone and
+nine modules' worth of habit preserved. A queued run says `queued`; the Cancel
+button says `Cancel all` above one, and cancels the queue with it.
 
 ### Sections and conditional fields
 
@@ -689,7 +765,7 @@ fields) into a `qt.QFormLayout`, using the type table below, and returns
 | Schema `type` | Qt widget |
 |---|---|
 | any non-file type with `server_selectable` set | `QComboBox` (populated by `base_widget._populateServerSelectables` from `GET /tools/{tool}/data` — `formgen` itself never talks HTTP) |
-| any **file** type with `server_selectable` set, or one `accepts_volume` says yes to | `ServerFileInput`: a one-line row, [sources dropdown][local picker][test data]. The dropdown offers the upload entry, then the scene's open volumes, then the server-hosted names (see "The input row" below) |
+| any **file** type with `server_selectable` set, or one `accepts_volume` says yes to | `ServerFileInput`: a one-line row, [sources dropdown][local picker]. The dropdown offers a prompt, then the tool's server-hosted test files (each with its kind and size), then the scene's open volumes (see "The input row" below) |
 | `str` | `QLineEdit` |
 | `int` | `QSpinBox` (range/step bounded by `min`/`max`/`step` when declared), or a `ctkSliderWidget` when the spec says `ui: "slider"` and declares both bounds |
 | `float` | `QDoubleSpinBox`, same rule, plus `decimals` |
@@ -820,44 +896,81 @@ axis, Shift+wheel = horizontal, arrows one step each, double-click back to
 the defaults. The geometry/value mapping is unit-tested in
 `test_joystick.py`; the schema-to-widget contract in `test_formgen.py`.
 
-### The input row: sources dropdown, open volumes, test data
+### The input row: one picker, the tool's test files, open volumes
 
 A file argument's row is ONE line, like the original modules. When the
 argument has more than one possible source, the local picker comes wrapped in
 `ServerFileInput` with a leading dropdown; the row is then
-[sources dropdown][path field + browse buttons][test data button].
+[sources dropdown][path field + browse buttons].
 
 The dropdown's entries, in order:
 
-1. **"Upload my own file..."**, the default: the local picker is the value.
-2. **The scene's open scalar volumes**, for any argument
+1. **The prompt** (`ServerFileInput.CHOOSE_OPTION`, deliberately the path
+   field's own placeholder, "Select a file or a folder"): the state where
+   nothing has been picked *from this list*. It is not a source and not a
+   mode. What says whether the argument has been given anything is the path
+   field.
+2. **The tool's server-hosted test files** (`GET /tools/{tool}/data`), each
+   labelled with what it is and what it costs — `CBCT_FullyAuto  (folder,
+   339 MB)` — from the `entries` half of that payload
+   (`formgen.hosted_entry_label` / `human_size`). A size the server did not
+   state shows nothing, never `0 B`.
+3. **The scene's open scalar volumes**, for any argument
    `formgen.accepts_volume` says yes to (a volume-ish type name, or a
    published volume extension; a csv input never offers them). `base_widget`
    feeds the names (`_refreshSceneVolumes`, re-run on `enter()`, on scene
    node add/remove, and after a scene close) and keeps the name-to-node map;
    at upload time the chosen node is exported to a temporary `.nii.gz` and
    sent like any local file. formgen itself never touches the MRML scene.
-3. **The server-hosted names** (`GET /tools/{tool}/data`), unchanged: the
-   name travels as a plain form value, the file itself never moves.
 
 Which kind is selected is decided by index, never by parsing the entry text,
 and rebuilding either list preserves the current selection when it is still
 offered. Picking any dropdown entry clears the path field and vice versa,
 same mutual-exclusion rule as before.
 
-**The test-data button** (`TEST_DATA = {argument: url}` on the module) ports
-the original modules' "Test Files" / "Download Test file" buttons: one click
-downloads the original extension's GitHub release asset to
-`~/Documents/<app>Downloads/<tool>/Test_Files/<name>/` (the original's
-location), unpacks it when it is a real `.zip` (a bare `.nii.gz` is kept
-as-is, where the original's `DownloadUnzip` called `ZipFile` on it and
-raised), and points the row at the result: the single file it holds when
-there is exactly one, the folder otherwise. The transfer runs on a
-`BackgroundJob` with the progress label reporting it; the fetch is staged in
-a sibling directory and renamed at the end, so an interrupted download can
-never leave a half-extracted folder that the idempotence check would mistake
-for a completed one. The HTTP lives in `client.download_file`; formgen only
-builds the button so the row stays one line.
+**Picking a test file downloads it**, and that is the one mechanism there is.
+There used to be two, answering the same question differently: this dropdown,
+which sent the hosted NAME and left the file on the server, and a separate
+"Test data" button that four modules (`AMASSS`, `ALI`, `ASO`, `AREG`) declared
+by hand as `TEST_DATA = {argument: github_release_url}` and eleven did not.
+The server knew nothing about the second, and only it put the scan where a
+clinician could open it beside the panel — which is the whole reason to want
+test data in a viewer.
+
+So a hosted test file is now **an action, not a state**: `formgen` reports the
+pick through the callback `base_widget` registers (`setHostedCallback`) — it
+never speaks HTTP — and `base_widget._onHostedTestFile` does the rest:
+
+- **on a `BackgroundJob`, always.** Naming a file cost nothing because it never
+  moved; fetching one on the main thread freezes the whole Slicer window,
+  measured at 21 minutes once. Progress goes to the same label a tool run uses.
+- **into a session temp directory** (`slicer.util.tempDirectory()`, kept on the
+  widget so there is one per session), never `~/Documents`: a 648 MB cohort
+  someone clicked once to look at has not been asked for permanently.
+- **cached by name**, so a second pick of the same entry issues no request.
+  Staged in a `<name>.downloading` sibling and renamed at the end, so an
+  interrupted download can never leave a half-extracted folder the cache check
+  would mistake for a complete one.
+- **a hosted folder is unpacked** (it arrives as a `.zip` the server builds,
+  there being no other way to put a directory on a wire) and the row points at
+  the unpacked directory. A hosted *file* that happens to be a `.zip` is left
+  as the file it is. The `kind` comes from `entries`; an older server that
+  publishes none falls back to "an extensionless name that really did arrive as
+  an archive was a directory".
+- **a single file is loaded into the scene** (`slicer_io.load_input`, volume or
+  mesh by extension) — the point of downloading rather than naming. A **folder
+  never is**: a forty-patient cohort would flood the scene. A load that fails is
+  a log line: the input is filled in and the run works either way.
+
+Once it lands the row holds an ordinary local path, so it is **uploaded** like
+any other file. The wire shape changed with the mechanism.
+
+**A hosted MODEL is the exception, and keeps the old behaviour.** ASO's
+`reference` is a *file*-typed argument flagged `server_selectable: "model"`,
+and the server deliberately refuses to stream a model — weights are selected
+by name and used in place. `ServerFileInput.hosted_downloads` is False for
+those, `server_name()` answers with the selection, and `collectArgs` sends it
+as a plain form value exactly as before.
 
 **Where the words come from, and the line between the two.** Everything
 describing a *tool* is the server's: the field label (`label`), the section
@@ -975,6 +1088,38 @@ which are the only places allowed to touch `slicer.*`/MRML, always run on the
 main thread. `cancel()` stops the timer and marks the job so any
 already-queued outcome is discarded; the underlying `requests.post` is not
 actually interrupted (see limitations).
+
+### The second timer, and why a worker thread needs one
+
+There are **two** timers, and the second one is not scheduling — it is a
+workaround for how Python is embedded in Slicer. Slicer's interpreter keeps the
+GIL on the main thread while that thread waits inside Qt's event loop, which is
+where it waits for all of a user's session. A Python worker thread therefore
+barely runs at all. Measured in Slicer, one bytecode loop:
+
+| the main thread is... | the worker manages |
+|---|---|
+| running the loop itself | 13,079,723 iterations/s |
+| **idle in Qt** — every real session | **6,632 iterations/s** |
+| ticking a 100 ms timer — the drain timer above | 453,957 iterations/s |
+| napping 1 ms at a time — as shipped | 15,586,975 iterations/s |
+
+The drain timer is not enough on its own: it lifts the worker by a factor of
+68 and leaves it 29 times short. This is what made a 94 MB test file take
+twenty seconds from a panel and under a second from a script, and it is why
+every earlier measurement taken from a harness looked fine — a harness that
+polls `processEvents()` runs Python on the main thread continuously, and hands
+the GIL over by accident.
+
+`time.sleep` releases the GIL for its duration, so `_yieldGil` sleeps and does
+nothing else; a `qt.QTimer` at interval 0 keeps calling it for as long as the
+job runs. Both timers start and stop together — a yield timer outliving its job
+would keep the main thread napping for nothing. End to end, the same download
+through the same `BackgroundJob`: **11.70 s → 0.32 s**.
+
+What it costs the interface is close to nothing. A 10 ms timer standing in for
+a repaint, measured over six seconds with a worker busy: median 10.3 ms → 12.3
+ms, p95 15.7 ms → 12.7 ms, worst 22.5 ms → 24.9 ms. Under one frame either way.
 
 ### Telling the user something is happening
 
@@ -1338,18 +1483,26 @@ the dropdown is empty (an empty `currentText` fails
 unsupported client-side, the server actively rejects a file upload for a
 scalar argument with a 400.
 
-**The same flag on a *file* argument means something different**, and both
-halves are offered. ALI's and AMASSS's `input` are
-`server_selectable: "testfile"` on a file type: the caller may upload its own
-data **or** name a cohort the server already hosts, and that file then never
-travels in either direction — which is the point when it is confidential.
-`formgen.ServerFileInput` renders the hosted names above the normal picker and
-keeps the two mutually exclusive by clearing the other, rather than letting one
-silently win. A hosted selection leaves `currentPath` empty on purpose, so
-`prepareInputFiles` uploads nothing and `collectArgs` sends the name as a plain
-form value instead; `client._validate_against_schema` accepts either as
-satisfying a required file argument. An empty hosted list is not warned about
-here — unlike a model, a file argument can always be uploaded instead.
+**The same flag on a *file* argument means something different**, and which of
+the two kinds it names decides what happens:
+
+- **`server_selectable: "testfile"`** (ALI's and AMASSS's `input`, AREG's
+  `t1`/`t2`) — the tool's test data. The caller may upload their own file **or**
+  pick one of the hosted entries, and picking one **downloads it** (see "The
+  input row" above), because the reason to want a test scan in Slicer is to
+  look at it. It is then an ordinary local file and goes up as an upload.
+- **`server_selectable: "model"` on a file type** (ASO's `reference`) — a
+  bundle, not test data. It is never downloadable: the selection leaves
+  `currentPath` empty on purpose, so `prepareInputFiles` uploads nothing and
+  `collectArgs` sends the NAME as a plain form value.
+
+Either way the two halves are kept mutually exclusive by clearing the other,
+rather than letting one silently win, and `client._validate_against_schema`
+accepts a name *or* an upload as satisfying a required file argument — the
+client only sends the second shape for a test file now, but the server takes
+both and a validator stricter than the thing it mirrors is a bug. An empty
+hosted list is not warned about here — unlike a scalar model, a file argument
+can always be uploaded instead.
 
 (Historical note: an earlier iteration had
 `"model"` as a second `zip_file` upload — `FILE_INPUTS = {"input":

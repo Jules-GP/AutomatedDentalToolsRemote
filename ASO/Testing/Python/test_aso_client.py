@@ -688,13 +688,37 @@ class ServerSelectablesRefreshTest(unittest.TestCase):
         self.assertIn("CBCT_landmark_models", self._landmarkModelItems())
         self.assertIn("CBCT_landmark_models", self._referenceItems())
 
-    def test_the_upload_entry_stays_first_on_a_file_input(self):
-        """Refilling must not cost `reference` its "upload my own" entry, which
-        is the only way to send a bundle the server does not host."""
+    def test_the_prompt_stays_first_on_a_file_input(self):
+        """Refilling must not cost `reference` the entry that means "none of
+        these": uploading a bundle the server does not host is only reachable
+        while the dropdown names nothing."""
         self.client.models.append("CBCT_landmark_models")
         self.panel._refreshServerSelectables()
         self.assertEqual(
-            self._referenceItems()[0], formgen.ServerFileInput.UPLOAD_OPTION
+            self._referenceItems()[0], formgen.ServerFileInput.CHOOSE_OPTION
+        )
+
+    def test_a_hosted_reference_is_a_name_and_is_never_downloaded(self):
+        """`reference` is server_selectable="model" on a FILE type. A model is
+        not downloadable - the server declines to stream one, weights being
+        selected by name and used in place - so this selection still travels as
+        a name, unlike a test file, which is fetched."""
+        reference = self.panel._inputWidgets["reference"]
+        self.assertFalse(reference.hosted_downloads)
+
+        picked = []
+        reference.setHostedCallback(picked.append)
+        reference.combo.setCurrentIndex(
+            self._referenceItems().index("Frankfurt_Horizontal_Midsagittal_Plane.zip")
+        )
+
+        self.assertEqual(picked, [])
+        self.assertEqual(
+            reference.server_name(), "Frankfurt_Horizontal_Midsagittal_Plane.zip"
+        )
+        self.assertEqual(
+            ServerToolWidgetBase._serverSideSelections(self.panel)["reference"],
+            "Frankfurt_Horizontal_Midsagittal_Plane.zip",
         )
 
     def test_a_chosen_model_survives_the_refresh(self):

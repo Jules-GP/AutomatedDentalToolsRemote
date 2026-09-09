@@ -98,14 +98,6 @@ class AREGWidget(ServerToolWidgetBase):
     # No RESULT_KIND either: output_kind "files" is one registered scan and its
     # transform per case and per region, plus AREG_report.json, bundled into one
     # .zip and unpacked into the output folder the user picks.
-    #
-    # The original module's per-mode "Test Files" buttons, ported. Only the two
-    # that fit an argument: the CBCT payloads are T1+T2+masks in one archive and
-    # the panel has three separate inputs, so the semi-automated CBCT set goes
-    # on `t1` where a user will look for it first.
-    TEST_DATA = {
-        "t1": "https://github.com/lucanchling/Areg_CBCT/releases/download/TestFiles/SemiAuto.zip",
-    }
     AUTO_UI = True
 
     # Loading is a courtesy for the single-pair run: a cohort registered on

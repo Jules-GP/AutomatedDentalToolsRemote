@@ -222,6 +222,10 @@ class QPushButton(QObject):
         self.clicked = Signal()
         self._checkable = False
 
+    def setText(self, text):
+        """PythonQt exposes both the property and the setter; so does this."""
+        self.text = text
+
     def setCheckable(self, checkable):
         self._checkable = bool(checkable)
 
@@ -264,6 +268,26 @@ class QCheckBox(QObject):
         return self._checked
 
 
+class _ListView:
+    """Just enough of the popup for `_widenPopup`: it sets a minimum width and
+    nothing here reads it back but the tests."""
+
+    def __init__(self):
+        self.minimumWidth = 0
+
+    def setMinimumWidth(self, width):
+        self.minimumWidth = width
+
+
+class _FontMetrics:
+    """One pixel per character. Real metrics are proportional, but the
+    property under test is "the widest entry decides", not the exact pixels."""
+
+    @staticmethod
+    def horizontalAdvance(text):
+        return len(text)
+
+
 class QComboBox(QObject):
     AdjustToMinimumContentsLengthWithIcon = 2
 
@@ -274,8 +298,13 @@ class QComboBox(QObject):
         self._index = -1
         self.sizeAdjustPolicy = 0
         self.minimumContentsLength = 0
+        self._view = _ListView()
+        self.fontMetrics = _FontMetrics()
         self.currentTextChanged = Signal()
         self.currentIndexChanged = Signal()
+
+    def view(self):
+        return self._view
 
     def addItems(self, items):
         self._items.extend(items)
@@ -366,6 +395,38 @@ class QDoubleSpinBox(QSpinBox):
 
     def setDecimals(self, decimals):
         self.decimals = decimals
+
+
+class QTimer(QObject):
+    """Records its state instead of running an event loop.
+
+    `BackgroundJob` drives two of these -- one draining its queue, one handing
+    the GIL to the worker thread -- and what a test needs to see is which of
+    them is running when, not Qt's scheduling.
+    """
+
+    def __init__(self, *_args, **_kwargs):
+        QObject.__init__(self)
+        self.interval = None
+        self.running = False
+        self.starts = 0
+        self.stops = 0
+        self.timeout = Signal()
+
+    def setInterval(self, milliseconds):
+        self.interval = milliseconds
+
+    def start(self, *_args):
+        self.running = True
+        self.starts += 1
+
+    def stop(self):
+        self.running = False
+        self.stops += 1
+
+    def fire(self):
+        """Call the connected slots, the way a real timeout would."""
+        self.timeout.emit()
 
 
 class QPalette:

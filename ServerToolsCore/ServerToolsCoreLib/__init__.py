@@ -17,6 +17,7 @@ from .client import (
     argument_types,
     file_extensions_for,
     is_file_type,
+    testfile_entries,
 )
 from .errors import ServerToolError
 
@@ -48,4 +49,5 @@ __all__ = [
     "argument_types",
     "accepts_folder",
     "file_extensions_for",
+    "testfile_entries",
 ]
