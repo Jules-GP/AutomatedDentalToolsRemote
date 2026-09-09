@@ -59,12 +59,16 @@ _UNGROUPED_LABEL = "Other"
 SELECT_ALL_LABEL = "All"
 SELECT_NONE_LABEL = "None"
 SELECT_DEFAULT_LABEL = "Default"
-# Per TAB, and it is the original extension's "Switch group selection" button
-# (ALI.py's LandmarkTabWidget.ToggleSelection) under an honest name: a clinician
-# who wants the cranial base wants ten boxes ticked, not ten clicks. The label
-# says which of the two a click will do, so the button never lies about itself.
-SELECT_GROUP_LABEL = "Select this group"
-CLEAR_GROUP_LABEL = "Clear this group"
+# Per TAB. The original extension had both a per-tab `Switch group selection`
+# and a global `Select All` / `Clear All` pair (ALI.py's LandmarkTabWidget); a
+# clinician who wants the cranial base wants ten boxes ticked, not ten clicks.
+#
+# TWO buttons rather than one toggle: a single button has to say which of the
+# two a click will do, so its label moves under the pointer as the group fills,
+# and a control whose name changes is a control you have to read before every
+# click. Two named actions are always true.
+SELECT_GROUP_LABEL = "Select All"
+CLEAR_GROUP_LABEL = "Deselect All"
 
 # Leads the dropdown of an OPTIONAL scalar `server_selectable` argument, and
 # reads back as "" so collectArgs drops the argument entirely and the server
@@ -287,7 +291,12 @@ class MultiChoiceGroup:
         # Declaration order, whatever order the layout visited the options in.
         self.boxes = {option: made[option] for option in choices}
 
-        if len(choices) > 1:
+        # No global bar on a TABBED group: every tab already carries a button
+        # that takes the whole group, and the two together were three small
+        # links under a button that does the same thing one tab at a time.
+        # Every other layout keeps it -- a flat column of nine structures has no
+        # other way to say "all of them".
+        if len(choices) > 1 and layout != "tabs":
             column.addWidget(self._selectionToolbar())
 
     def _selectionToolbar(self):
@@ -490,30 +499,30 @@ def _group_page(grid_page, page_boxes):
     if not page_boxes:
         return container
 
-    button = design.link_button(SELECT_GROUP_LABEL)
-
-    def relabel(*_args):
-        every = all(box.isChecked() for box in page_boxes)
-        button.setText(CLEAR_GROUP_LABEL if every else SELECT_GROUP_LABEL)
-
-    def flip():
-        wanted = not all(box.isChecked() for box in page_boxes)
-        for box in page_boxes:
-            box.setChecked(wanted)
-        relabel()
-
-    button.clicked.connect(flip)
-    for box in page_boxes:
-        # Ticking the last box by hand must turn the button into "Clear", or it
-        # offers to do what is already done.
-        box.toggled.connect(relabel)
-    relabel()
-
+    # Real buttons, splitting the full width of their tab, rather than the small
+    # links they started as. They are the ONLY bulk control on a tabbed
+    # multichoice -- the global All / None / Default bar is not drawn beside
+    # them -- and a control that acts on everything above it should look like it
+    # does. Secondary and not primary: filled blue buttons over a check-box grid
+    # compete with Apply, the one button that starts a run.
     row = qt.QWidget()
     bar = qt.QHBoxLayout(row)
     bar.setContentsMargins(0, 0, 0, 0)
-    bar.addWidget(button)
-    bar.addStretch(1)
+    bar.setSpacing(design.SPACING_XS)
+
+    def setter(state):
+        def apply_state():
+            for box in page_boxes:
+                box.setChecked(state)
+        return apply_state
+
+    for label, state in ((SELECT_GROUP_LABEL, True), (CLEAR_GROUP_LABEL, False)):
+        button = design.secondary_button(label)
+        button.clicked.connect(setter(state))
+        # Equal stretch: the pair spans exactly what it acts on, and neither
+        # half looks like the more important one.
+        bar.addWidget(button, 1)
+
     column.addWidget(row)
     return container
 

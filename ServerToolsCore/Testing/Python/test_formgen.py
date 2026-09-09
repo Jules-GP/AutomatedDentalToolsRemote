@@ -778,10 +778,11 @@ class MultiChoiceLayoutTest(unittest.TestCase):
         self.assertEqual(tabs.maximumHeight(), design.tabs_height_for(1))
         self.assertLess(tabs.maximumHeight(), 220)
 
-    def _toggle_of(self, tabs, index):
+    def _buttons_of(self, tabs, index):
+        """tab -> [scroll area, the button pair]. {label: button}."""
         tab = tabs.tabs[index][1]
         bar = tab.layout.widgets[1]
-        return bar.layout.widgets[0]
+        return {button.text: button for button in bar.layout.widgets}
 
     def test_a_tab_can_be_taken_in_one_click(self):
         """The original extension's `Switch group selection`, restored.
@@ -799,51 +800,48 @@ class MultiChoiceLayoutTest(unittest.TestCase):
         others = {option: group.boxes[option].isChecked()
                   for option in _LAYOUT_GROUPS["Second"]}
 
-        self._toggle_of(tabs, 0).clicked.emit()
+        self._buttons_of(tabs, 0)[formgen.SELECT_GROUP_LABEL].clicked.emit()
 
         for option in first:
             self.assertTrue(group.boxes[option].isChecked(), option)
         for option, before in others.items():
             self.assertEqual(group.boxes[option].isChecked(), before, option)
 
-    def test_the_same_click_gives_the_group_back(self):
+    def test_deselect_all_clears_only_its_own_tab(self):
         group = self._group("tabs", _LAYOUT_GROUPS)
         tabs = [w for w in group.container.layout.widgets if isinstance(w, qt.QTabWidget)][0]
-        toggle = self._toggle_of(tabs, 0)
+        others = {option: group.boxes[option].isChecked()
+                  for option in _LAYOUT_GROUPS["Second"]}
 
-        toggle.clicked.emit()
-        toggle.clicked.emit()
+        self._buttons_of(tabs, 0)[formgen.CLEAR_GROUP_LABEL].clicked.emit()
 
         for option in _LAYOUT_GROUPS["First"]:
             self.assertFalse(group.boxes[option].isChecked(), option)
+        for option, before in others.items():
+            self.assertEqual(group.boxes[option].isChecked(), before, option)
 
-    def test_the_button_says_which_of_the_two_a_click_will_do(self):
-        """Otherwise it offers to select a group that is already selected."""
+    def test_each_tab_names_both_actions_rather_than_one_that_changes(self):
+        """A single toggle has to say which of the two a click will do, so its
+        label moves under the pointer as the group fills. Two named actions are
+        always true."""
         group = self._group("tabs", _LAYOUT_GROUPS)
         tabs = [w for w in group.container.layout.widgets if isinstance(w, qt.QTabWidget)][0]
-        toggle = self._toggle_of(tabs, 0)
-        self.assertEqual(toggle.text, formgen.SELECT_GROUP_LABEL)
+        buttons = self._buttons_of(tabs, 0)
 
-        toggle.clicked.emit()
+        self.assertEqual(set(buttons),
+                         {formgen.SELECT_GROUP_LABEL, formgen.CLEAR_GROUP_LABEL})
 
-        self.assertEqual(toggle.text, formgen.CLEAR_GROUP_LABEL)
+        buttons[formgen.SELECT_GROUP_LABEL].clicked.emit()
 
-    def test_ticking_the_last_box_by_hand_relabels_the_button(self):
-        group = self._group("tabs", _LAYOUT_GROUPS)
-        tabs = [w for w in group.container.layout.widgets if isinstance(w, qt.QTabWidget)][0]
-        toggle = self._toggle_of(tabs, 0)
+        self.assertEqual(set(self._buttons_of(tabs, 0)), set(buttons),
+                         "the labels must not move under the pointer")
 
-        for option in _LAYOUT_GROUPS["First"]:
-            group.boxes[option].setChecked(True)
-
-        self.assertEqual(toggle.text, formgen.CLEAR_GROUP_LABEL)
-
-    def test_the_group_toggle_changes_nothing_on_the_wire(self):
+    def test_the_group_buttons_change_nothing_on_the_wire(self):
         """Whatever the layout does, `value()` is still the complete state."""
         group = self._group("tabs", _LAYOUT_GROUPS)
         tabs = [w for w in group.container.layout.widgets if isinstance(w, qt.QTabWidget)][0]
 
-        self._toggle_of(tabs, 0).clicked.emit()
+        self._buttons_of(tabs, 0)[formgen.SELECT_GROUP_LABEL].clicked.emit()
 
         self.assertEqual(set(group.value()), set(_LAYOUT_CHOICES))
         self.assertTrue(all(group.value()[option] for option in _LAYOUT_GROUPS["First"]))
@@ -860,11 +858,30 @@ class MultiChoiceLayoutTest(unittest.TestCase):
         self.assertEqual(grid.rowStretch.get(grid.rowCount()), 1)
         self.assertEqual(grid.columnStretch, {})
 
+    def test_a_tabbed_group_has_no_global_bar_beside_its_tab_buttons(self):
+        """Every tab already carries a button that takes the whole group; the
+        two together were three small links under a button doing the same thing
+        one tab at a time."""
+        group = self._group("tabs", _LAYOUT_GROUPS)
+
+        texts = [getattr(w, "text", "") for w in group.container.layout.widgets]
+        self.assertNotIn(formgen.SELECT_ALL_LABEL, texts)
+        self.assertNotIn(formgen.SELECT_DEFAULT_LABEL, texts)
+
+    def test_every_other_layout_keeps_it(self):
+        """A flat column of nine structures has no other way to say "all of
+        them"."""
+        for layout in (None, "inline", "grid"):
+            group = self._group(layout, _LAYOUT_GROUPS if layout == "grid" else None)
+            bar = group.container.layout.widgets[-1]
+            labels = [w.text for w in bar.layout.widgets if hasattr(w, "text")]
+            self.assertIn(formgen.SELECT_ALL_LABEL, labels, layout)
+
     def test_all_none_default_sit_under_the_options_not_at_the_far_edge(self):
         """Right-aligned they floated at the edge of the panel with nothing to
         attach to -- and on ALI the `regions` bar landed directly above the
         LABEL OF THE NEXT FIELD, reading as if it belonged to that one."""
-        group = self._group(None)
+        group = self._group(None)  # flat: still carries the bar
         bar = group.container.layout.widgets[-1]
 
         labels = [w.text for w in bar.layout.widgets if hasattr(w, "text")]

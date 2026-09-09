@@ -1009,11 +1009,19 @@ global `Select All` / `Clear All`. The generated panel kept the global pair as
 All / None / Default and dropped the per-group one, so asking for the cranial
 base cost ten clicks instead of one.
 
-It is back, per tab, under the name it does rather than the one it had: **Select
-this group** / **Clear this group**, relabelled as the group fills so it never
-offers to select what is already selected — including when the user ticks the
-last box by hand. It sits outside the scroll area, so it does not scroll away
-from the options it acts on, and it is scoped to its own tab.
+It is back, per tab, as **two full-width buttons** — `Select All` and
+`Deselect All` — splitting the width of the tab they act on. Two named actions
+rather than one toggle: a single button has to say which of the two a click will
+do, so its label moves under the pointer as the group fills, and a control whose
+name changes is one you have to read before every click. They sit outside the
+scroll area, so they do not scroll away from the options they act on, and they
+are scoped to their own tab.
+
+They are also the ONLY bulk control on a tabbed group: the global All / None /
+Default bar is not drawn beside them, because the two together were three small
+links under a button doing the same thing one tab at a time. Every other layout
+keeps the bar — a flat column of nine structures has no other way to say "all of
+them".
 
 Nothing changes on the wire: `MultiChoiceGroup.value()` is still the complete
 `{option: checked}` state whatever the layout did, which is the invariant every

@@ -304,12 +304,9 @@ def secondary_button(text: str) -> qt.QPushButton:
     return _role_button(text, "secondary")
 
 
-def compact_button(text: str) -> qt.QPushButton:
-    """A small inline button for a form row (the browse actions): the
-    primary gradient with tighter padding and no top margin, so a row of them
-    stays one text-field tall and the whole input fits on a single line."""
+def _compact_button(text: str, role: str) -> qt.QPushButton:
     t = tokens()
-    stops = _button_stops()["primary"]
+    stops = _button_stops()[role]
     button = qt.QPushButton(text)
     button.setStyleSheet(
         f"QPushButton {{ background-color: {_gradient(*stops['base'])}; color: white;"
@@ -320,6 +317,27 @@ def compact_button(text: str) -> qt.QPushButton:
         f"QPushButton:disabled {{ background-color: {t['DISABLED_BG']}; color: {t['DISABLED_TEXT']}; }}"
     )
     return button
+
+
+def compact_button(text: str) -> qt.QPushButton:
+    """A small inline button for a form row (the browse actions): the
+    primary gradient with tighter padding and no top margin, so a row of them
+    stays one text-field tall and the whole input fits on a single line."""
+    return _compact_button(text, "primary")
+
+
+def compact_danger_button(text: str) -> qt.QPushButton:
+    """A small interrupting action attached to ONE line of a list: the Cancel
+    that belongs to a single run, next to that run's own progress line.
+
+    Deliberately NOT danger_button: the panel already has one of those, full
+    width under Apply, and it cancels everything. A second full-width red
+    button per run would read as another main action and would be the easiest
+    thing on the panel to hit by accident -- which here means throwing away an
+    inference that has been going for twenty minutes. Small, inline, and
+    unmistakably subordinate to the button above it.
+    """
+    return _compact_button(text, "danger")
 
 
 def toggle_button(text: str) -> qt.QPushButton:
@@ -405,8 +423,8 @@ CHART_MIN_HEIGHT = 90   # two rows of check boxes plus their group labels
 # further -- so ASO's two arches of teeth and ALI's ten cranial landmarks both
 # sat in a 380 px box that was mostly empty.
 CHECKBOX_ROW_HEIGHT = 24  # measured on a row of the tab grid
-TABS_CHROME_HEIGHT = 76   # the tab bar, the grid's margins, the frame, and the
-                          # per-group toggle that sits under every tab
+TABS_CHROME_HEIGHT = 88   # the tab bar, the grid's margins, the frame, and the
+                          # full-width group button under every tab
 TABS_MIN_HEIGHT = 96      # the floor a QScrollArea needs: its size hint ignores
                           # its child, so without one it collapses to a few px
 TABS_MAX_HEIGHT = 320     # past this, one argument owns the whole panel
@@ -466,6 +484,24 @@ def update_status_badge(label: qt.QLabel, ok: bool) -> None:
     color = t["SUCCESS"] if ok else t["DANGER"]
     label.setText("Server: online" if ok else "Server: offline")
     label.setStyleSheet(f"color: {color}; font-weight: 600; padding: {SPACING_XS}px;")
+
+
+def progress_bar() -> qt.QProgressBar:
+    """A determinate bar for a run whose server-side progress is a real number.
+
+    Hidden by default and shown ONLY while a tool reports a fraction: most
+    runs report none at all, and a bar that has to fake motion to look alive
+    is worse than the elapsed-time line beside it, which at least never
+    claims to know how far along anything is. Styled entirely by the base
+    stylesheet's QProgressBar rules, so it follows the theme with the rest of
+    the panel.
+    """
+    bar = qt.QProgressBar()
+    bar.setRange(0, 100)
+    bar.setValue(0)
+    bar.setVisible(False)
+    bar.setTextVisible(True)
+    return bar
 
 
 def progress_label() -> qt.QLabel:
