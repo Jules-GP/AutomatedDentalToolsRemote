@@ -340,6 +340,47 @@ def compact_danger_button(text: str) -> qt.QPushButton:
     return _compact_button(text, "danger")
 
 
+def option_chip(text: str) -> qt.QPushButton:
+    """One option of a dense multichoice: the label IS the control.
+
+    A check box puts an 18 px target next to the word a clinician is actually
+    reading, and asks them to hit the square. Over ALI's 119 landmarks or ASO's
+    32 teeth that is the difference between a list and a chore -- and the state
+    of a whole grid reads at a glance as filled against outlined, which a grid
+    of small ticks does not.
+
+    Still a real CHECKABLE widget, not a painted label: `isChecked`,
+    `setChecked` and `toggled` are Qt's own, so `MultiChoiceGroup` reads it back
+    exactly as it read a check box, and the keyboard reaches it. Nothing about
+    the wire changes.
+
+    Quiet on purpose. Slicer is the application around this panel, and the brief
+    for this layer is to stay consistent with its native look: an outline that
+    fills with the accent, no gradient, no shadow. `toggle_button` is the
+    opposite case -- two saturated states where the COLOUR is the information --
+    and the two must not be confused.
+    """
+    t = tokens()
+    button = qt.QPushButton(text)
+    button.setCheckable(True)
+    button.setCursor(qt.QCursor(qt.Qt.PointingHandCursor))
+    button.setStyleSheet(
+        f"QPushButton {{ background-color: {t['SURFACE']}; color: {t['TEXT']};"
+        f" border: 1px solid {t['BORDER']}; border-radius: 10px;"
+        f" padding: {SPACING_XS}px {SPACING_MD}px; font-weight: 500; text-align: center; }}"
+        f"QPushButton:hover {{ border: 1px solid {t['PRIMARY']}; }}"
+        # Same weight as an unselected chip, deliberately. Qt sizes a button
+        # from the text it has when the grid is laid out, so bolding the checked
+        # state made the label wider than its own chip: "LPo" rendered "LPc".
+        # The fill carries the selection; nothing moves.
+        f"QPushButton:checked {{ background-color: {t['PRIMARY']}; color: white;"
+        f" border: 1px solid {t['PRIMARY']}; }}"
+        f"QPushButton:disabled {{ background-color: {t['DISABLED_BG']};"
+        f" color: {t['DISABLED_TEXT']}; border: 1px solid {t['BORDER']}; }}"
+    )
+    return button
+
+
 def toggle_button(text: str) -> qt.QPushButton:
     """A checkable on/off button: blue when off ("click to start"), red while
     checked ("active, click to stop"), as GreedyReg's interactive-tool toggle.
@@ -422,7 +463,7 @@ CHART_MIN_HEIGHT = 90   # two rows of check boxes plus their group labels
 # fixed floor of 220 px that the panel's spare vertical space then stretched
 # further -- so ASO's two arches of teeth and ALI's ten cranial landmarks both
 # sat in a 380 px box that was mostly empty.
-CHECKBOX_ROW_HEIGHT = 24  # measured on a row of the tab grid
+CHECKBOX_ROW_HEIGHT = 34  # a chip row: the label, its padding and its border
 TABS_CHROME_HEIGHT = 88   # the tab bar, the grid's margins, the frame, and the
                           # full-width group button under every tab
 TABS_MIN_HEIGHT = 96      # the floor a QScrollArea needs: its size hint ignores

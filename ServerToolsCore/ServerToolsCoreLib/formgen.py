@@ -48,7 +48,26 @@ DEFAULT_SECTION = "Inputs"
 # Options per row inside a "tabs" tab. Fixed rather than computed from the
 # panel width: the module panel is resizable and a reflow on every drag would
 # move check boxes under the user's cursor mid-click.
-_TAB_COLUMNS = 4
+# How many options a dense grid puts on a line. Derived from the LONGEST label
+# rather than fixed: ALI's cranial base is `Ba`, `S`, `N` and fits six across,
+# while its lower region runs to `UR3OIP` and fits three. A single number had to
+# be chosen for the worst case, which wasted half the width on every short
+# catalogue.
+_MIN_COLUMNS = 3
+_MAX_COLUMNS = 8
+# Roughly the character width a chip's padding and border add, in characters.
+_CHIP_OVERHEAD = 4
+# The width a tab has to spend, in characters. Calibrated against the panel at
+# its usual width -- which is what a Slicer module panel is, not resizable in
+# practice: four chips of five characters measured 225 px of the 570 the box
+# offers, so the first guess spent under half of it.
+_GRID_BUDGET = 64
+
+
+def _columns_for(options) -> int:
+    """A column count the longest option still fits in."""
+    longest = max((len(str(option)) for option in options), default=1)
+    return max(_MIN_COLUMNS, min(_MAX_COLUMNS, _GRID_BUDGET // (longest + _CHIP_OVERHEAD)))
 
 # Where the leftovers go when `groups` doesn't mention every option. The server
 # rejects a group naming an option that doesn't exist, but not the reverse —
@@ -349,6 +368,14 @@ def _make_box(option: str, checked) -> qt.QCheckBox:
     return box
 
 
+def _make_chip(option: str, checked):
+    """The dense layouts' option: the label itself, checkable (see
+    design.option_chip). Reads back exactly as a check box does."""
+    chip = design.option_chip(option)
+    chip.setChecked(bool(checked))
+    return chip
+
+
 def _grouped(choices: dict, groups) -> list:
     """[(group name, [option, ...])] — the declared groups, then whatever they
     left out. Options keep `choices` order within each group, so a group
@@ -417,7 +444,7 @@ def _build_grid_boxes(column, choices: dict, groups=None) -> dict:
         if group_name:
             grid.addWidget(design.hint_label(group_name), row_index, 0)
         for offset, option in enumerate(options):
-            boxes[option] = _make_box(option, choices[option])
+            boxes[option] = _make_chip(option, choices[option])
             grid.addWidget(boxes[option], row_index, offset + 1)
 
     # Rows only: the COLUMNS are the arch, and letting them take the slack would
@@ -439,21 +466,29 @@ def _build_tabs_boxes(column, choices: dict, groups=None) -> dict:
     tabs = qt.QTabWidget()
     boxes = {}
     grouped = list(_grouped(choices, groups))
+    # Per TAB, from that tab's own longest label. `Ba`, `S`, `N` fit six across
+    # where `UR3OIP` fits four, and one count for the whole argument had to be
+    # the worst case -- half the width wasted on every short region. It changes
+    # only the arrangement INSIDE the box, which already resizes with the tab.
     for group_name, options in grouped:
+        columns = _columns_for(options)
         page = qt.QWidget()
         grid = qt.QGridLayout(page)
         grid.setContentsMargins(design.SPACING_SM, design.SPACING_SM, design.SPACING_SM, design.SPACING_SM)
-        grid.setSpacing(design.SPACING_XS)
+        grid.setVerticalSpacing(design.SPACING_XS)
+        # Wider than tall: chips carry their own padding, so touching columns
+        # read as one long word while touching rows read as a list.
+        grid.setHorizontalSpacing(design.SPACING_MD)
         for index, option in enumerate(options):
-            boxes[option] = _make_box(option, choices[option])
-            grid.addWidget(boxes[option], index // _TAB_COLUMNS, index % _TAB_COLUMNS)
+            boxes[option] = _make_chip(option, choices[option])
+            grid.addWidget(boxes[option], index // columns, index % columns)
         page_boxes = [boxes[option] for option in options]
         # The page is stretched to the scroll area's height, and a QGridLayout
         # hands that slack to its ROWS: measured on ALI's cranial base, eleven
         # 20 px check boxes sat 94 px apart -- three sparse lines floating in a
         # tall empty box. A trailing row and column take the slack instead, so
         # the options pack at the top left and read as a list.
-        _pack_to_top_left(grid, rows=-(-len(options) // _TAB_COLUMNS), columns=_TAB_COLUMNS)
+        _pack_to_top_left(grid, rows=-(-len(options) // columns), columns=columns)
         tabs.addTab(_group_page(page, page_boxes), group_name or _UNGROUPED_LABEL)
 
     # Fixed both ways, and PER TAB. A minimum alone let the panel's spare
@@ -465,7 +500,7 @@ def _build_tabs_boxes(column, choices: dict, groups=None) -> dict:
     # The heights live in this closure, never on the widget: PythonQt refuses a
     # new attribute on a C++ object ("creating new attributes on C++ objects is
     # not allowed") and takes the panel down with it.
-    heights = [design.tabs_height_for(-(-len(options) // _TAB_COLUMNS))
+    heights = [design.tabs_height_for(-(-len(options) // _columns_for(options)))
                for _name, options in grouped]
 
     def fit(index=None):

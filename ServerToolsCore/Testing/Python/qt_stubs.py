@@ -90,6 +90,17 @@ class QWidget(QObject):
         QObject.__init__(self)
         self.parent = parent
         self.layout = None
+        self.deleted = False
+
+    def setParent(self, parent):
+        """Reparenting is what removes a widget from its layout in Qt, which is
+        how base_widget swaps a container wholesale (_buildForm,
+        _rebuildRunCancelButtons). Recorded so a test can check the old one
+        really left."""
+        self.parent = parent
+
+    def deleteLater(self):
+        self.deleted = True
 
 
 class QLayout(QObject):
@@ -138,10 +149,20 @@ class QGridLayout(QLayout):
         # boxes sat 94 px apart -- and that is a property worth a test.
         self.rowStretch = {}
         self.columnStretch = {}
+        self.verticalSpacing = None
+        self.horizontalSpacing = None
 
     def addWidget(self, widget, row=0, column=0, *_args):
         self.widgets.append(widget)
         self.cells[(row, column)] = widget
+
+    def setVerticalSpacing(self, spacing):
+        self.verticalSpacing = spacing
+
+    def setHorizontalSpacing(self, spacing):
+        """Recorded separately: chips carry their own padding, so the two gaps
+        are deliberately different -- touching columns read as one long word."""
+        self.horizontalSpacing = spacing
 
     def setRowStretch(self, row, stretch):
         self.rowStretch[row] = stretch
@@ -262,7 +283,20 @@ class QPushButton(QObject):
         QObject.__init__(self)
         self.text = text
         self.clicked = Signal()
+        self.toggled = Signal()
         self._checkable = False
+        self._checked = False
+
+    def setChecked(self, checked):
+        """A checkable button IS the option in a dense multichoice, so it has to
+        read back exactly as a check box does (see design.option_chip)."""
+        checked = bool(checked)
+        if checked != self._checked:
+            self._checked = checked
+            self.toggled.emit(checked)
+
+    def isChecked(self):
+        return self._checked
 
     def setText(self, text):
         """PythonQt exposes both the property and the setter; so does this."""
@@ -506,6 +540,29 @@ class QTimer(QObject):
     def fire(self):
         """Call the connected slots, the way a real timeout would."""
         self.timeout.emit()
+
+
+class QProgressBar(QObject):
+    """Records its range and value. Determinate only: base_widget shows it
+    exclusively for a fraction a tool really reported, so there is no
+    indeterminate (0, 0) mode to model."""
+
+    def __init__(self):
+        QObject.__init__(self)
+        self.minimum = 0
+        self.maximum = 100
+        self.value = 0
+        self.textVisible = True
+
+    def setRange(self, minimum, maximum):
+        self.minimum = minimum
+        self.maximum = maximum
+
+    def setValue(self, value):
+        self.value = value
+
+    def setTextVisible(self, visible):
+        self.textVisible = bool(visible)
 
 
 class QPalette:

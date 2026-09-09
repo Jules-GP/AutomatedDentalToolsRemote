@@ -151,6 +151,22 @@ interpreter launch:
   delivers it when the test says so — because "this must never block the
   Slicer window" is the property under test, and a synchronous fake could not
   show it.
+- **`test_run_progress.py`** — the run's progress stream and its cancellation,
+  and the second suite that is not mocked, for the same reason as
+  `test_transfer.py`: what is under test is a SECOND connection held open while
+  the first is blocked, which no mocked `Session` can show.
+  `test_the_event_stream_really_is_open_while_the_run_is` answers NEITHER
+  request until both have arrived, and then holds the run's answer back until
+  its progress has been delivered — so it fails, rather than passing quietly,
+  if the client ever goes back to one connection or starts reporting progress
+  only after the run is over. The fake server is the awkward one on purpose: it
+  answers `404` while the run is still being registered, cuts the stream
+  mid-run, replays it from the beginning, and sends a frame that is not JSON.
+- **`test_runs.py`** and **`test_worker.py`** cover the panel's side of the same
+  feature — one id and one cancel token per run, the phase vocabulary rendered
+  in the clinician's words, a queued run cancelled with no HTTP call at all, a
+  `499` that opens no dialog, and the per-run Cancel buttons — plus the run
+  queue and the two timers that were already there.
 
 ## How the pieces fit together
 
@@ -411,6 +427,74 @@ interpreter launch:
   `ServerToolsSettings` change the server URL/API key at runtime without a
   Slicer restart — see the dedicated section below.
 
+### A run that says what it is doing, and a run that can be stopped
+
+`run()` takes three more optional arguments, and every one of them is optional
+on **both** sides of the wire. A run sent without an id is byte for byte the
+request this client always sent; a client using these endpoints against a
+server that has none of them gets a `404` and falls back to the elapsed-time
+tick it already shows. The extension ships on its own schedule, so that is a
+requirement rather than a nicety.
+
+- `new_run_id()` → `secrets.token_urlsafe(24)`, and the CLIENT mints it. A
+  server-assigned id could only travel in the response, and the response is the
+  last thing that happens — the whole point is to say something while the
+  request is still in flight. It is a **capability**: knowing it plus the
+  bearer token is what authorises reading a run's progress and cancelling it,
+  the same model the result ids already use, which is why it is a CSPRNG and
+  never a counter or anything derived from a patient.
+- `run(..., run_id=..., event_cb=..., cancel_event=...)`. The id travels as the
+  `X-Run-Id` header (an unknown header is ignored by an older server, which is
+  what makes it safe to send). `event_cb` receives the run's progress events,
+  and `cancel_event` is a `threading.Event` the caller sets to withdraw the
+  run.
+- `watch_run(run_id, on_event, stop_event=None)` → bool. Consumes
+  `GET /runs/{id}/events` (Server-Sent Events), parses each `data:` frame into
+  the contract's event dict, and delivers them deduplicated and ordered on
+  `seq`. Returns whether anything was delivered — `False` is how a caller
+  learns it is talking to a server that predates all of this.
+- `cancel_run(run_id)` → bool. `DELETE /runs/{id}`, retried once, and it never
+  raises: by the time it is called the panel has already released the run, so
+  there is nothing a user could do with the news of a failure.
+
+**The watcher is a SECOND connection, opened inside `run()` for the duration of
+the POST.** It has to be: the thread calling `run()` is blocked inside that POST
+for the whole inference, which is precisely the window there is nothing to say
+from. It is started immediately before the POST (the run exists server-side only
+once the request gets there) and stopped in a `finally` whatever the outcome —
+a watcher left retrying against a run that has already answered is a thread
+holding a connection open for nobody.
+
+Three properties of the loop are load-bearing, and each has a test:
+
+- **A `404` is tolerated for a startup window** (15 s, or until the first event
+  arrives). The run is registered server-side when the POST lands, and on the
+  multipart path *parsing the form is receiving the upload* — so a watcher that
+  gave up on the first 404 would go quiet on exactly the long uploads this
+  feature exists for. Once any event has arrived the window is over: a 404 then
+  means the run was reaped, and it stops.
+- **It reconnects** when a stream ends without a terminal event — a dropped
+  connection, a proxy's idle timeout, a read timeout — which matters most on
+  the runs that last hours. The read timeout is deliberately long (30 s): the
+  contract has no heartbeat, so silence is the normal state of an inference.
+- **Which makes deduplication mandatory rather than decorative.** Every
+  connection replays the run from the beginning by design ("a watcher that
+  attaches late is never behind"), so `seq` is the only thing keeping a
+  reconnect from re-announcing an hour of progress.
+
+`normalise_run_event` is what a panel actually receives: an event either arrives
+with a usable `seq`, a `fraction` that is `None` or really within `0..1`, a
+non-negative `depth` and a message truncated to 200 characters, or it does not
+arrive at all. The server truncates the message too; trusting that alone would
+leave one forgetful server able to push a megabyte of text into a `QLabel`.
+
+**`499` is a cancellation, not a failure.** `errors.RunCancelled` is a class of
+its own — that is the whole reason the contract borrowed a non-standard status
+code — because one outcome closes a panel quietly and the other opens an error
+dialog, and no client should have to parse a message to tell them apart. It
+subclasses `ServerToolError`, so a caller that has never heard of it behaves
+exactly as before.
+
 ## `base_widget.py` — `ServerToolWidgetBase`
 
 Owns the entire Slicer lifecycle (`setup`/`cleanup`/`enter`/`exit`, scene
@@ -514,6 +598,24 @@ it always did** — no run number, no label. The prefix appears only once there 
 something to tell apart, which is the overwhelmingly common case left alone and
 nine modules' worth of habit preserved. A queued run says `queued`; the Cancel
 button says `Cancel all` above one, and cancels the queue with it.
+
+**Each run also carries its own id and its own cancel token** (`_Run.run_id`,
+`_Run.cancel_event`), which is what makes one line of a cohort stoppable on its
+own. Above one run, `_rebuildRunCancelButtons` puts a small
+`design.compact_danger_button` under each line — deliberately small and inline,
+because the easiest thing to hit by accident on this panel must not be the one
+that throws away twenty minutes of inference. With a single run there is no
+per-run button at all: the panel's own Cancel already cancels exactly that run.
+
+**Cancelling a QUEUED run makes no HTTP call whatsoever.** It was never sent, so
+there is nothing on the server to withdraw — which also means a queue can be
+emptied with the server unreachable, unplugged or gone. A run that HAS been sent
+gets a `DELETE /runs/{id}`, issued from a plain daemon thread rather than a
+`BackgroundJob`: there is no outcome to deliver and nothing to render, and a
+Cancel click must be instant even against a server that has stopped answering —
+which is a state in which people press Cancel. `cleanup()` does the same for
+every run still in flight, because a panel that is going away can never collect
+those results and the card they hold is shared with every other client.
 
 ### Sections and conditional fields
 
@@ -1036,6 +1138,38 @@ different requests, and the run report distinguishes them (`regions` is empty
 when `landmarks_selected` is not). The per-group toggle gives the same gesture
 inside one argument, without quietly rewriting the other.
 
+### A dense option is the label itself
+
+A check box puts an 18 px target beside the word a clinician is actually
+reading, and asks them to hit the square. Over ALI's 119 landmarks or ASO's 32
+teeth that is a chore — and a grid of small ticks does not read as
+selected-or-not at a glance, which is what a clinician does with a tooth chart.
+
+So the two DENSE layouts — `tabs` and the `grid` chart — draw each option as a
+chip: a rounded outline that fills with the accent when chosen
+(`design.option_chip`). `inline` and the flat column keep the native check box:
+two or three options are a check box's own idiom, and Slicer is the application
+around this panel.
+
+- **Still a real checkable widget**, never a painted label. `isChecked`,
+  `setChecked` and `toggled` are Qt's own, so `MultiChoiceGroup` reads a chip
+  back exactly as it read a box and the keyboard reaches it. Nothing on the wire
+  moves — the invariant every layout here is held to.
+- **The chip does not bold when checked.** Qt sizes a button from the text it
+  has when the grid is laid out, so the heavier face overflowed its own chip:
+  `LPo` rendered as `LPc`. The fill carries the selection. (The tab bar had the
+  identical bug, found the same way — from a screenshot.)
+- **Columns are derived per tab, from that tab's own longest label.**
+  `_columns_for`: `Ba`, `S`, `N` fit seven across where `UR3OIP` fits six. One
+  count for the whole argument had to be the worst case and wasted half the
+  width on every short region; per tab it changes only the arrangement INSIDE
+  the box, which already resizes with the tab. The character budget was
+  calibrated against the panel, not guessed twice: the first value spent 225 px
+  of the 570 the box offers.
+- **The columns sit further apart than the rows** (`SPACING_MD` against
+  `SPACING_XS`). Chips carry their own padding, so touching columns read as one
+  long word while touching rows read as a list.
+
 ### A multichoice that is proportioned to what it holds
 
 Photographed on ALI and ASO, the check-box groups had three faults, and all
@@ -1242,7 +1376,10 @@ tight inline variant the one-line input rows use), `toggle_button(text)`
 (checkable, blue → red while checked; flat on purpose, the two-state color
 is the information), `section_title(text)`, `required_label(text)`,
 `hint_label(text)`, `link_button(text)`, `warning_label(text)`,
-`status_badge()` / `update_status_badge(label, ok)`, `progress_label()`.
+`status_badge()` / `update_status_badge(label, ok)`, `progress_label()`,
+`compact_danger_button(text)` (the per-run Cancel: small and inline, so it can
+never compete with the panel's own Cancel above it), `progress_bar()`
+(determinate, shown only for a fraction a tool really reported).
 The joystick pad's paint colors live here too (`pad_palette()`, `PAD_SIZE`),
 so theme detection and color choices stay in this one file. Changing the
 primary color across the whole extension is still an edit to this file alone.
@@ -1255,8 +1392,19 @@ payload)` tuples on a `queue.Queue`. A `qt.QTimer` (100 ms) on the main thread
 drains the queue and invokes the callbacks there — so `on_success`/`on_error`,
 which are the only places allowed to touch `slicer.*`/MRML, always run on the
 main thread. `cancel()` stops the timer and marks the job so any
-already-queued outcome is discarded; the underlying `requests.post` is not
-actually interrupted (see limitations).
+already-queued outcome is discarded.
+
+`cancel()` has a second half now: it sets `job.cancel_event`, a
+`threading.Event` **the target can see**. That is the only kind of token that
+can stop anything — the UI half was always immediate, but the thread went on
+running to completion inside `requests` regardless. A target given the event
+checks it at its own boundaries (`client.run` does so before the uploads,
+before the POST, and before pulling a result down), so what stops is everything
+after the current checkpoint. It cannot interrupt a socket read in progress;
+stopping the RUN is the server's `DELETE /runs/{id}`, which the panel issues
+alongside. The caller may pass its own event in — `base_widget` does, because
+the run's progress watcher reads the same one, so cancelling closes the event
+stream in the same gesture that stops the work.
 
 ### The second timer, and why a worker thread needs one
 
@@ -1319,10 +1467,59 @@ Three pieces close it, and only the first can cover the inference phase:
   actually paints the label — without it Qt repaints only once the blocking
   extraction has already finished, which is precisely too late to be useful.
 
-What this still does **not** give you is real progress during the inference
-itself: the elapsed time proves the panel is alive, but the server exposes no
-job/progress endpoint, so no client can know how far along nnUNet is. That
-needs a server-side change, not a client one (see limitations).
+### What the server itself says, while the request is still in flight
+
+The elapsed timer proves the panel is alive. It cannot say what the run is
+*doing*, and for a long time nothing could: four minutes queued behind another
+client's GPU job and four minutes of inference looked identical from here. They
+are told apart now, and the mechanism is one connection and no new machinery.
+
+- **`_Run.run_id`** is minted at Apply time and sent as `X-Run-Id`.
+- **`client.run` opens the event stream itself**, on a second thread, for the
+  length of the POST (see "A run that says what it is doing" above). The events
+  are pushed into the SAME `progress_cb` the client's own messages use — the
+  panel passes `event_cb=progress_cb` on purpose. `BackgroundJob`'s queue plus
+  its main-thread timer is the one mechanism in this extension allowed to cross
+  a thread boundary, and a second one would be a second way to get Qt wrong.
+  `_onJobProgress` tells the two apart by type: a `dict` is a server event, a
+  string is the client narrating its own work.
+- **`_onRunEvent`** keeps the server's phase, message, fraction and depth on the
+  run, apart from `run.phase` (what the CLIENT is doing). Neither can stand in
+  for the other: only the client knows it is uploading, and only the server
+  knows it has been waiting for the card for four minutes.
+- **`_phaseLabel`** translates the contract's small CLOSED phase vocabulary
+  (`received`, `staging`, `queued_gpu`, `running`, `packaging`, `done`,
+  `failed`, `cancelled`) into the clinician's words — `queued_gpu` is shown as
+  "Waiting for the GPU", never as itself. The dict is built at call time, not as
+  a module constant, because `_` resolves against the interface language in
+  force when it runs. A phase this client has never heard of is shown as-is: a
+  phase added on the server side must degrade to a slightly technical word,
+  never to a run that looks like it stopped saying anything.
+- **`_runPhaseText`** decides which side is talking. The server's word wins
+  while the server is the one working; the client's own phases take over the
+  moment it has something of its own to report, since by then the server has
+  finished — "Downloading results" comes after "packaging", and showing both
+  would leave the older of the two on the panel.
+- **`_renderProgressBar`** shows a determinate `design.progress_bar()` only when
+  exactly one run is in flight and it reports a real `fraction`. With several
+  there is no single number a bar could honestly show, and each line already
+  carries its own percentage; with none, a bar that has to invent motion to look
+  busy is worse than the elapsed line beside it, which never claims to know how
+  far along anything is. A fraction is never fabricated on either side.
+- **Nothing from an event is logged.** A progress message is written by a tool
+  and may name a file, which on this extension's data means it may name a
+  patient. It is rendered on the panel of the person who started the run and
+  goes nowhere else.
+
+A supervised chain (AREG → ASO → ALI) arrives as a `depth` and nothing more, so
+the line shows nesting as nesting: the contract does not carry the child's name,
+and naming it would be guessing which tool is running.
+
+**A run that ends in a `499` closes quietly.** `_onJobError` answers
+`RunCancelled` with a status-bar line and no error dialog — the user asked for
+this, and a dialog would be the panel arguing with them about it. It is answered
+on its own merits rather than by checking whether we were the ones who asked,
+since a run can be cancelled by anyone holding its id.
 
 ## `slicer_io.py`
 
@@ -1908,21 +2105,32 @@ This confirms the four success criteria from the brief:
   "Reload") or restart Slicer. Rebuilding a healthy panel on its own would
   discard whatever the user had typed into it, so it is deliberately not
   automatic.
-- **No true server-side cancel**: `BackgroundJob.cancel()` discards the
-  result and releases the UI immediately, but the in-flight `requests.post`
-  keeps running against the server until it finishes or times out
-  (`timeout=600`). A real cancel would need the server to expose a
-  cancellation endpoint keyed by a request id. Note the consequence when a user
-  cancels late: the download completes anyway and the result file is left in the
-  output folder, but `handleResult` never runs, so a `save_as` archive stays
-  zipped instead of being unpacked. The file is intact — it just looks like
-  nothing arrived.
-- **No real progress during the inference phase**: the elapsed-time tick shows
-  the panel is alive, never how far along the run is, because a tool run is a
-  single request whose response arrives only at the end. Reporting genuine
-  progress means the server growing a job API (submit → poll → fetch), which is
-  the same change a real cancel needs; both are worth doing together or not at
-  all. Until then, the honest signal available to a client is elapsed time.
+- **Server-side cancel and live progress both depend on the server having the
+  run endpoints** (`GET /runs/{id}/events`, `DELETE /runs/{id}`). Against a
+  deployment that predates them the old behaviour is exactly what remains, by
+  design and silently: the events request answers `404`, the watcher gives up
+  after its startup window, the panel keeps its elapsed-time tick, and Cancel
+  goes back to releasing the UI while the request runs on. Nothing warns about
+  this, because there is nothing the user of an old server could do about it.
+- **A cancel is cooperative on this side and immediate on the server's.**
+  `cancel_event` cannot interrupt a socket read in progress, so the local half
+  stops at the next checkpoint (`client.run` checks before the uploads, before
+  the POST, and — the one that matters — before pulling a result down). What
+  actually stops a two-hour nnUNet is the `DELETE`, which signals the run's
+  process group. Cancelling a run whose result is already streaming still leaves
+  a partial file in the output folder: the download is abandoned and
+  `handleResult` never runs, so nothing is unpacked or loaded.
+- **A watcher can outlive its usefulness by up to 30 seconds.** The event stream
+  has no heartbeat, so its read timeout is long; a run that ends without a
+  terminal event leaves the watcher blocked in that read until it expires. It is
+  a daemon thread doing nothing, holding one pooled connection, and `run()`'s
+  `finally` has already told it to stop — but it is not instantaneous.
+- **Cancelling a run does not wait to hear that the server agreed.** The
+  `DELETE` goes out on a daemon thread and its outcome is never reported: the
+  panel has already released the run, and an error dialog for a failed
+  cancellation would be a second thing to dismiss on the way out. An abandoned
+  run is reaped server-side on its own idle timeout, which is the guarantee
+  behind that choice.
 - **Schema fetch is synchronous**: `get_tool_schema()` inside `_buildAutoUI`
   runs on the main thread during `setup()` (i.e. opening the module). This is
   a deliberate choice — `GET /tools` is cheap and cached, and building the

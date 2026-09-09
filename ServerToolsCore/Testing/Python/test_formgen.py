@@ -719,7 +719,8 @@ class MultiChoiceLayoutTest(unittest.TestCase):
             rows = max((row for row, _column in grid.cells), default=-1) + 1
             self.assertEqual(grid.rowStretch.get(rows), 1,
                              "the spare height must go below the options")
-            self.assertEqual(grid.columnStretch.get(formgen._TAB_COLUMNS), 1,
+            columns = formgen._columns_for(_LAYOUT_CHOICES)
+            self.assertEqual(grid.columnStretch.get(columns), 1,
                              "and the spare width to their right")
 
     def test_the_tab_box_is_bounded_both_ways(self):
@@ -862,6 +863,69 @@ class MultiChoiceLayoutTest(unittest.TestCase):
 
         self.assertEqual(set(group.value()), set(_LAYOUT_CHOICES))
         self.assertTrue(all(group.value()[option] for option in _LAYOUT_GROUPS["First"]))
+
+    def test_a_dense_option_is_the_label_itself(self):
+        """A check box puts an 18 px target beside the word the clinician is
+        reading. Over 119 landmarks that is a chore, and a grid of small ticks
+        does not read as selected-or-not at a glance."""
+        group = self._group("tabs", _LAYOUT_GROUPS)
+        chip = group.boxes["a"]
+
+        self.assertIsInstance(chip, qt.QPushButton)
+        self.assertEqual(chip.text, "a")
+        self.assertTrue(chip._checkable, "it has to remain a real toggle")
+
+    def test_a_chip_reads_back_exactly_as_a_check_box_did(self):
+        """The invariant every layout here is held to: a wrong layout may be
+        ugly, it is never wrong on the wire."""
+        group = self._group("tabs", _LAYOUT_GROUPS)
+
+        self.assertEqual(group.value(), _LAYOUT_CHOICES)
+        group.boxes["b"].setChecked(True)
+        self.assertTrue(group.value()["b"])
+        group.setAll(False)
+        self.assertFalse(any(group.value().values()))
+
+    def test_a_short_catalogue_gets_more_columns_than_a_long_one(self):
+        """One number had to be chosen for the worst case, and wasted half the
+        width on every short catalogue: `Ba`, `S`, `N` fit six across where
+        `UR3OIP` fits four."""
+        self.assertGreater(formgen._columns_for(["Ba", "S", "N", "RPo"]),
+                           formgen._columns_for(["UR3OIP", "LFZyg", "RFZyg"]))
+        self.assertLessEqual(formgen._columns_for(["x" * 40]), formgen._MAX_COLUMNS)
+        self.assertGreaterEqual(formgen._columns_for(["x" * 40]), formgen._MIN_COLUMNS)
+
+    def test_a_tab_of_short_labels_gets_more_columns_than_one_of_long(self):
+        """One count for the whole argument had to be the worst case, and wasted
+        half the width on every short region. It changes only the arrangement
+        INSIDE the box, which already resizes with the tab."""
+        short = ["Ba", "S", "N", "RPo", "LPo", "C2"]
+        long = ["UR3OIPxx", "LFZygxxx", "RFZygxxx", "UL6Oxxxx"]
+        group = formgen.MultiChoiceGroup(
+            {option: False for option in short + long}, "",
+            layout="tabs", groups={"Short": short, "Long": long})
+        tabs = [w for w in group.container.layout.widgets if isinstance(w, qt.QTabWidget)][0]
+
+        def columns_of(index):
+            grid = tabs.tabs[index][1].layout.widgets[0].widget.layout
+            return max(column for _row, column in grid.cells) + 1
+
+        self.assertGreater(columns_of(0), columns_of(1))
+
+    def test_the_columns_are_further_apart_than_the_rows(self):
+        """Chips carry their own padding: touching columns read as one long
+        word, touching rows read as a list."""
+        group = self._group("tabs", _LAYOUT_GROUPS)
+        tabs = [w for w in group.container.layout.widgets if isinstance(w, qt.QTabWidget)][0]
+        grid = tabs.tabs[0][1].layout.widgets[0].widget.layout
+
+        self.assertGreater(grid.horizontalSpacing, grid.verticalSpacing)
+
+    def test_a_small_list_keeps_the_native_check_box(self):
+        """Slicer is the application around this panel. Two or three options are
+        a check box's own idiom, and restyling them buys nothing."""
+        group = self._group("inline")
+        self.assertIsInstance(group.boxes["a"], qt.QCheckBox)
 
     def test_the_chart_stretches_its_rows_but_never_its_columns(self):
         """The columns ARE the arch. Spreading them across whatever width the
