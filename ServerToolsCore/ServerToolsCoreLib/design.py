@@ -155,7 +155,11 @@ def _base_stylesheet(t: dict) -> str:
     }}
     QSpinBox:focus, QDoubleSpinBox:focus {{ border: 2px solid {t['PRIMARY']}; }}
     QTabWidget::pane {{
-      background-color: {t['SURFACE']};
+      /* Transparent, not SURFACE. A white card behind the options was a block of
+         a colour the panel around it does not use -- Slicer's own ground shows
+         through instead, and the chips and buttons on top of it are what carry
+         the shapes. The border still says where the group ends. */
+      background-color: transparent;
       border: 1px solid {t['BORDER']};
       border-radius: 6px;
       /* Lifted by one pixel so the selected tab's open bottom edge meets the
@@ -163,7 +167,7 @@ def _base_stylesheet(t: dict) -> str:
       top: -1px;
     }}
     QTabBar::tab {{
-      background-color: {t['BACKGROUND']};
+      background-color: transparent;
       color: {t['TEXT_MUTED']};
       border: 1px solid {t['BORDER']};
       border-bottom: none;
@@ -174,7 +178,9 @@ def _base_stylesheet(t: dict) -> str:
       font-weight: 500;
     }}
     QTabBar::tab:selected {{
-      background-color: {t['SURFACE']};
+      /* The accent and the closed bottom edge say which tab is open; a fill
+         would put the white card back one line higher. */
+      background-color: transparent;
       color: {t['PRIMARY']};
       /* Same weight as an unselected tab, deliberately. Qt sizes a tab from the
          text it has when the bar is laid out, so bolding the selected one made

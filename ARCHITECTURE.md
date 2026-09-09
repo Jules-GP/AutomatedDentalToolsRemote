@@ -1198,7 +1198,11 @@ three came from layout code rather than from any tool:
   inside a panel built of 6 px radii and hairline borders — and the scroll area
   inside drew a second, squarer frame just within the first. Both are styled from
   the tokens now: rounded tab corners, a pane sharing the section's radius, and
-  `QScrollArea` with no border of its own. The selected tab is carried by the
+  `QScrollArea` with no border of its own. The pane and the tabs are
+  **transparent**, not `SURFACE`: a white card behind the options was a block of
+  a colour the panel around it does not use, and Slicer's own ground showing
+  through is what makes the group read as part of the panel rather than as
+  something dropped on it. The border still says where the group ends. The selected tab is carried by the
   accent colour and **not** by a heavier font: Qt sizes a tab from the text it
   has when the bar is laid out, so bolding the selected one made it wider than
   its own slot and "Cranial base" rendered as "ranial bas", clipped at both ends.
