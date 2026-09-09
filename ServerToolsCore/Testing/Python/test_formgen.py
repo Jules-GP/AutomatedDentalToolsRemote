@@ -752,11 +752,42 @@ class LabelTest(unittest.TestCase):
         self.assertEqual(formgen.label_for("input", {"label": None}), "Input")
         self.assertEqual(formgen.label_for("input", {"label": "   "}), "Input")
 
-    def test_the_fallback_is_why_labels_belong_server_side(self):
-        # It cannot know that "cbct" is an acronym, nor that ASO's `input`
-        # holds the scans AND their landmarks. That is not a bug to fix here - 
-        # no naming rule can recover a phrase nobody wrote down.
-        self.assertEqual(formgen.label_for("cbct_landmarks", {}), "Cbct landmarks")
+    def test_the_vocabulary_is_spelled_here_because_the_server_may_not_know_it(self):
+        """The server hands over "Cbct landmarks" and cannot do better.
+
+        Knowing that CBCT is a word would make it know its tools, which is the
+        one thing that server is built not to know -- an executable claim,
+        checked on every build. This side IS the dental extension, so the table
+        lives here and the word comes out whole.
+        """
+        self.assertEqual(formgen.label_for("cbct_landmarks", {}), "CBCT landmarks")
+        self.assertEqual(formgen.label_for("ios_networks", {}), "IOS networks")
+        self.assertEqual(formgen.label_for("prediction_ID", {}), "Prediction ID")
+
+    def test_a_declared_label_gets_the_same_courtesy(self):
+        """A tool that typed "Cbct regions" by hand reads the same as one that
+        declared nothing: one rule, applied to whatever is displayed."""
+        self.assertEqual(
+            formgen.label_for("cbct_regions", {"label": "Cbct regions"}),
+            "CBCT regions",
+        )
+
+    def test_a_phrase_no_rule_could_invent_survives_untouched(self):
+        """The case that matters most: no token matches, nothing is rewritten.
+
+        No naming rule can recover "Scan / Landmark Folder" from `input`, which
+        is why a tool declares it — and why this pass must never damage one.
+        """
+        for phrase in ("Scan / Landmark Folder", "Reference (gold) file",
+                       "Number of workers", "T1"):
+            self.assertEqual(formgen.label_for("whatever", {"label": phrase}), phrase)
+
+    def test_the_pass_matches_whole_words_only(self):
+        """"identifier" is not "id", and "action" is not "ct"."""
+        self.assertEqual(formgen.label_for("x", {"label": "Patient identifier"}),
+                         "Patient identifier")
+        self.assertEqual(formgen.label_for("x", {"label": "No action taken"}),
+                         "No action taken")
 
     def test_one_rule_for_generated_fields_and_file_inputs(self):
         # Regression: build() used the raw schema name while base_widget

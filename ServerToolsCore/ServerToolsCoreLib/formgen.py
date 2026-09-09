@@ -905,22 +905,59 @@ def row_widget(field):
     return getattr(field, "container", field)
 
 
+# Words a clinician reads as one unit, kept in their own case rather than
+# sentence-cased into nonsense: "CBCT regions", not "Cbct regions".
+#
+# **This table lives here and nowhere else, on purpose.** It used to sit in the
+# server, which put the names of the served tools inside a server built not to
+# know them -- an executable claim of that project, checked on every build by
+# scripts/domain_coupling.py, and it failed. A dental vocabulary belongs to the
+# side that is dental: this extension. The server derives "Cbct regions" from
+# the argument name, knowing nothing; this finishes the word.
+ACRONYMS = {
+    "cbct": "CBCT", "ios": "IOS", "mri": "MRI", "ct": "CT", "roi": "ROI",
+    "id": "ID", "gpu": "GPU", "cpu": "CPU", "vram": "VRAM", "dicom": "DICOM",
+    "vtk": "VTK", "stl": "STL", "nifti": "NIfTI", "tmj": "TMJ", "llm": "LLM",
+    "3d": "3D", "2d": "2D", "fdi": "FDI", "icp": "ICP", "aso": "ASO",
+    "ali": "ALI", "areg": "AREG", "amasss": "AMASSS",
+}
+
+
+def spell_acronyms(text: str) -> str:
+    """Put the vocabulary's own case back into a label, word by word.
+
+    Applied to whatever is displayed, declared or derived. A tool that wrote
+    "Cbct landmarks" by hand gets the same courtesy, and a tool that wrote
+    something no token matches -- "Scan / Landmark Folder" -- comes through
+    untouched, which is the case that matters most.
+    """
+    words = []
+    for word in text.split(" "):
+        stripped = word.strip()
+        replacement = ACRONYMS.get(stripped.lower())
+        words.append(word.replace(stripped, replacement) if replacement else word)
+    return " ".join(words)
+
+
 def label_for(name: str, spec: dict) -> str:
     """The text shown next to an argument's widget.
 
     **The schema's `label` when it declares one**, so the words a user reads
     are the tool's own — "Scan / Landmark Folder", not something this file
     invented. The fallback prettifies the argument name and is exactly that: a
-    fallback for a tool that declares none. It cannot do better than
-    "Cbct landmarks" for `cbct_landmarks`, and it has no way to know that ASO's
+    fallback for a tool that declares none. It has no way to know that ASO's
     `input` is the folder holding both the scans and their landmarks.
+
+    What it CAN do, and the server cannot, is spell the vocabulary: the server
+    hands over "Cbct regions" because knowing that CBCT is a word would make it
+    know its tools. See ACRONYMS above.
 
     There is ONE rule and it lives here. There used to be two — `build()` used
     the raw schema name while base_widget prettified it — so a single panel
     showed "Reference" and "cbct_landmarks" one above the other.
     """
     declared = (spec.get("label") or "").strip()
-    return declared or name.replace("_", " ").capitalize()
+    return spell_acronyms(declared or name.replace("_", " ").capitalize())
 
 
 def section_of(spec: dict) -> str:
