@@ -51,19 +51,19 @@ def _pad(**kwargs):
 class ValueTest(unittest.TestCase):
     def test_opens_at_the_centre_of_both_axes(self):
         pad = _pad(x_range=(0.0, 10.0), y_range=(-5.0, 5.0))
-        self.assertEqual((pad.x, pad.y), (5.0, 0.0))
+        self.assertEqual((pad.value_x, pad.value_y), (5.0, 0.0))
 
     def test_set_values_clamps_to_the_ranges(self):
         pad = _pad()
         pad.setValues(99.0, -99.0)
-        self.assertEqual((pad.x, pad.y), (10.0, -10.0))
+        self.assertEqual((pad.value_x, pad.value_y), (10.0, -10.0))
 
     def test_an_inverted_range_still_clamps_both_ends(self):
         pad = _pad(x_range=(15.0, -15.0))
         pad.setValues(99.0, 0.0)
-        self.assertEqual(pad.x, 15.0)
+        self.assertEqual(pad.value_x, 15.0)
         pad.setValues(-99.0, 0.0)
-        self.assertEqual(pad.x, -15.0)
+        self.assertEqual(pad.value_x, -15.0)
 
     def test_notify_calls_on_changed_with_the_pad(self):
         pad = _pad()
@@ -141,7 +141,7 @@ class MouseTest(unittest.TestCase):
     def test_an_absolute_press_jumps_the_knob_under_the_cursor(self):
         pad = _pad(x_range=(0.0, 1.0), y_range=(0.0, 1.0))
         seen = []
-        pad.onChanged = lambda p: seen.append((p.x, p.y))
+        pad.onChanged = lambda p: seen.append((p.value_x, p.value_y))
         left, top, width, height = pad._area()
 
         pad.mousePressEvent(FakeMouseEvent(left + width, top))
@@ -156,7 +156,7 @@ class MouseTest(unittest.TestCase):
 
         pad.mouseReleaseEvent(None)
 
-        self.assertEqual((pad.x, pad.y), (3.0, 4.0))
+        self.assertEqual((pad.value_x, pad.value_y), (3.0, 4.0))
         self.assertEqual(released, [])
 
     def test_a_spring_back_drag_is_relative_then_springs_home(self):
@@ -167,17 +167,17 @@ class MouseTest(unittest.TestCase):
 
         # Press anywhere: the knob holds (relative drag), no value change.
         pad.mousePressEvent(FakeMouseEvent(20, 20))
-        self.assertEqual((pad.x, pad.y), (0.0, 0.0))
+        self.assertEqual((pad.value_x, pad.value_y), (0.0, 0.0))
 
         # Move 11px right and 11px up from the press point: the knob moves by
         # the same delta from where it was, 11/110 of each axis span of 20.
         pad.mouseMoveEvent(FakeMouseEvent(31, 9))
-        self.assertAlmostEqual(pad.x, 2.0)
-        self.assertAlmostEqual(pad.y, 2.0)
+        self.assertAlmostEqual(pad.value_x, 2.0)
+        self.assertAlmostEqual(pad.value_y, 2.0)
 
         # Release: home, silently, and the gesture is reported as ended.
         pad.mouseReleaseEvent(None)
-        self.assertEqual((pad.x, pad.y), (0.0, 0.0))
+        self.assertEqual((pad.value_x, pad.value_y), (0.0, 0.0))
         self.assertEqual(released, [pad])
         self.assertAlmostEqual(pad._knobPosition()[0], centre_x)
         self.assertAlmostEqual(pad._knobPosition()[1], centre_y)
@@ -191,8 +191,8 @@ class KeyAndWheelTest(unittest.TestCase):
         pad.keyPressEvent(FakeKeyEvent(qt.Qt.Key_Up))
         pad.keyPressEvent(FakeKeyEvent(qt.Qt.Key_Up))
 
-        self.assertAlmostEqual(pad.x, 0.2)
-        self.assertAlmostEqual(pad.y, 0.4)
+        self.assertAlmostEqual(pad.value_x, 0.2)
+        self.assertAlmostEqual(pad.value_y, 0.4)
 
     def test_arrows_are_screen_directional_on_an_inverted_axis(self):
         # Right must always walk the knob right; on x_range [15, -15] that is
@@ -201,15 +201,15 @@ class KeyAndWheelTest(unittest.TestCase):
 
         pad.keyPressEvent(FakeKeyEvent(qt.Qt.Key_Right))
 
-        self.assertAlmostEqual(pad.x, -0.3)
+        self.assertAlmostEqual(pad.value_x, -0.3)
 
     def test_the_wheel_walks_the_vertical_axis(self):
         pad = _pad()
 
         pad.wheelEvent(FakeWheelEvent(2))
 
-        self.assertAlmostEqual(pad.y, 0.4)
-        self.assertAlmostEqual(pad.x, 0.0)
+        self.assertAlmostEqual(pad.value_y, 0.4)
+        self.assertAlmostEqual(pad.value_x, 0.0)
 
     def test_shift_wheel_walks_the_horizontal_axis(self):
         pad = _pad()
@@ -219,8 +219,8 @@ class KeyAndWheelTest(unittest.TestCase):
 
         pad.wheelEvent(FakeWheelEvent(1))
 
-        self.assertAlmostEqual(pad.x, 0.2)
-        self.assertAlmostEqual(pad.y, 0.0)
+        self.assertAlmostEqual(pad.value_x, 0.2)
+        self.assertAlmostEqual(pad.value_y, 0.0)
 
     def test_on_wheel_takes_the_wheel_over_entirely(self):
         pad = _pad()
@@ -230,7 +230,7 @@ class KeyAndWheelTest(unittest.TestCase):
         pad.wheelEvent(FakeWheelEvent(3))
 
         self.assertEqual(seen, [3.0])
-        self.assertEqual((pad.x, pad.y), (0.0, 0.0))
+        self.assertEqual((pad.value_x, pad.value_y), (0.0, 0.0))
 
     def test_double_click_returns_to_the_defaults(self):
         pad = _pad()
@@ -239,19 +239,19 @@ class KeyAndWheelTest(unittest.TestCase):
 
         pad.mouseDoubleClickEvent(None)
 
-        self.assertEqual((pad.x, pad.y), (1.0, -1.0))
+        self.assertEqual((pad.value_x, pad.value_y), (1.0, -1.0))
 
     def test_a_spring_back_nudge_reports_then_springs_home(self):
         pad = _pad(spring_back=True)
         changes, released = [], []
-        pad.onChanged = lambda p: changes.append((p.x, p.y))
+        pad.onChanged = lambda p: changes.append((p.value_x, p.value_y))
         pad.onReleased = released.append
 
         pad.keyPressEvent(FakeKeyEvent(qt.Qt.Key_Up))
 
         # The nudge was dealt out (visible to onChanged), then sprung home.
         self.assertEqual(changes, [(0.0, 0.2)])
-        self.assertEqual((pad.x, pad.y), (0.0, 0.0))
+        self.assertEqual((pad.value_x, pad.value_y), (0.0, 0.0))
         self.assertEqual(released, [pad])
 
 
