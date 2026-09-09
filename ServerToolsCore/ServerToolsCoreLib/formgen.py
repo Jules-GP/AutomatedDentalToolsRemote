@@ -503,8 +503,12 @@ def _group_page(grid_page, page_boxes):
     # links they started as. They are the ONLY bulk control on a tabbed
     # multichoice -- the global All / None / Default bar is not drawn beside
     # them -- and a control that acts on everything above it should look like it
-    # does. Secondary and not primary: filled blue buttons over a check-box grid
-    # compete with Apply, the one button that starts a run.
+    # does.
+    #
+    # Blue adds, red takes away, which is the extension's own vocabulary
+    # everywhere else: Apply is blue, Cancel is red. Grey was tried first and
+    # read as disabled -- two large, evenly weighted slabs of DISABLED_BG next to
+    # each other look like a control that is off, not like two you may press.
     row = qt.QWidget()
     bar = qt.QHBoxLayout(row)
     bar.setContentsMargins(0, 0, 0, 0)
@@ -516,8 +520,9 @@ def _group_page(grid_page, page_boxes):
                 box.setChecked(state)
         return apply_state
 
-    for label, state in ((SELECT_GROUP_LABEL, True), (CLEAR_GROUP_LABEL, False)):
-        button = design.secondary_button(label)
+    for label, state, make in ((SELECT_GROUP_LABEL, True, design.primary_button),
+                               (CLEAR_GROUP_LABEL, False, design.danger_button)):
+        button = make(label)
         button.clicked.connect(setter(state))
         # Equal stretch: the pair spans exactly what it acts on, and neither
         # half looks like the more important one.

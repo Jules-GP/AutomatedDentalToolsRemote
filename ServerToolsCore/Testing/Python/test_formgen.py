@@ -836,6 +836,23 @@ class MultiChoiceLayoutTest(unittest.TestCase):
         self.assertEqual(set(self._buttons_of(tabs, 0)), set(buttons),
                          "the labels must not move under the pointer")
 
+    def test_the_pair_reads_as_add_and_take_away(self):
+        """Blue adds, red takes away -- the extension's own vocabulary, where
+        Apply is blue and Cancel is red. Grey was tried first and read as
+        disabled: two evenly weighted slabs of DISABLED_BG next to each other
+        look like a control that is off."""
+        group = self._group("tabs", _LAYOUT_GROUPS)
+        tabs = [w for w in group.container.layout.widgets if isinstance(w, qt.QTabWidget)][0]
+        buttons = self._buttons_of(tabs, 0)
+        tokens = design.tokens()
+
+        # Asserted by ROLE, not by hex: the colours live in design.py's stop
+        # tables and a restyle there must not have to be restated here.
+        self.assertEqual(buttons[formgen.SELECT_GROUP_LABEL]._stylesheet,
+                         design._button_stylesheet("primary", tokens))
+        self.assertEqual(buttons[formgen.CLEAR_GROUP_LABEL]._stylesheet,
+                         design._button_stylesheet("danger", tokens))
+
     def test_the_group_buttons_change_nothing_on_the_wire(self):
         """Whatever the layout does, `value()` is still the complete state."""
         group = self._group("tabs", _LAYOUT_GROUPS)
