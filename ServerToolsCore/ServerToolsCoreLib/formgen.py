@@ -463,11 +463,11 @@ class JoystickInput:
             if pad.spring_back:
                 # The knob's offset from its rest position is a displacement
                 # dealt onto the committed base, not a value of its own.
-                self.xBox.setValue(self._base[0] + (pad.x - pad.default_x))
-                self.yBox.setValue(self._base[1] + (pad.y - pad.default_y))
+                self.xBox.setValue(self._base[0] + (pad.value_x - pad.default_x))
+                self.yBox.setValue(self._base[1] + (pad.value_y - pad.default_y))
             else:
-                self.xBox.setValue(pad.x)
-                self.yBox.setValue(pad.y)
+                self.xBox.setValue(pad.value_x)
+                self.yBox.setValue(pad.value_y)
         finally:
             self._syncing = False
 
@@ -497,7 +497,17 @@ class JoystickInput:
 
 
 def _axis_spinbox(bounds, step) -> qt.QDoubleSpinBox:
+    """The number a pad is showing, read-only.
+
+    The pad IS the input: it sets both axes with one gesture, and the knob sits
+    where the point sits on the arch. A box that also accepts typing gives the
+    same value two owners and reads as a form to fill in, which is not what the
+    original was -- there the numbers report what the pad is doing.
+    """
     box = qt.QDoubleSpinBox()
+    box.setReadOnly(True)
+    box.setButtonSymbols(qt.QAbstractSpinBox.NoButtons)
+    box.setFocusPolicy(qt.Qt.NoFocus)
     low, high = sorted((float(bounds[0]), float(bounds[1])))
     box.setRange(low, high)
     box.setDecimals(_decimals_for_step(step))
@@ -968,6 +978,40 @@ def section_of(spec: dict) -> str:
     return spec.get("section") or DEFAULT_SECTION
 
 
+# A section whose arguments are laid out in a grid rather than one per row.
+# Declared per ARGUMENT (`section_columns`) because that is the only place the
+# schema has to hang a hint, and read back per section: every argument in one
+# section must agree, and the first that speaks wins.
+#
+# FlexReg is why. Its four patch corners are a 2x2 that MIRRORS THE ARCH -- left
+# column one side, right column the other, top row anterior -- so a pad's
+# position on screen is where that corner is in the mouth. Stacked one per row
+# that meaning is gone, and the panel is four identical pads in a column.
+def cell_of(name: str, spec: dict) -> str:
+    """Which grid cell an argument shares. Its own name when it names none.
+
+    Several arguments describing ONE thing belong together: FlexReg's anterior
+    right corner is a tooth number and a position along it, and upstream drew
+    them in one box with the pad. One argument per cell puts the four teeth in a
+    column and the four pads in another, which is a table of arguments rather
+    than a picture of an arch.
+    """
+    return spec.get("cell") or name
+
+
+def section_columns(arguments_schema: dict, section: str) -> int:
+    """How many columns `section` is laid out in. 1 is one argument per row."""
+    for spec in arguments_schema.values():
+        if section_of(spec) == section:
+            declared = spec.get("section_columns")
+            if declared:
+                try:
+                    return max(1, int(declared))
+                except (TypeError, ValueError):
+                    return 1
+    return 1
+
+
 def sections_of(arguments_schema: dict, extra=()) -> list:
     """Every distinct section a tool's arguments name, in the order they are
     first mentioned — the schema's declaration order, which is the tool
@@ -1070,6 +1114,9 @@ def build(arguments_schema: dict, layout, sections=None, rows=None) -> dict:
     field reliably across PythonQt versions.
     """
     widgets = {}
+    # {(layout, cell name): the QWidget holding that cell}, so several arguments
+    # naming one cell stack inside it instead of taking a cell each.
+    grid_cells = {}
     for name, spec in arguments_schema.items():
         if is_file_type(spec.get("type", "")):
             continue
@@ -1084,7 +1131,32 @@ def build(arguments_schema: dict, layout, sections=None, rows=None) -> dict:
         label = design.required_label(text) if spec.get("required") else design.section_title(text)
         target = (sections or {}).get(section_of(spec), layout)
         field = row_widget(widget)
-        target.addRow(label, field)
+        if hasattr(target, "addRow"):
+            target.addRow(label, field)
+        else:
+            # A grid section: the caller handed a QGridLayout instead, and the
+            # label goes above its field rather than beside it, so a 2x2 of pads
+            # reads as a 2x2 rather than as four labelled rows.
+            cell = qt.QWidget()
+            stack = qt.QVBoxLayout(cell)
+            stack.setContentsMargins(0, 0, 0, 0)
+            stack.addWidget(label)
+            stack.addWidget(field)
+            # Read back from the schema, never stored on the layout: PythonQt
+            # forbids creating an attribute on a C++ object, so `grid.columns =
+            # 2` fails with "creating new attributes on C++ objects is not
+            # allowed" and takes the whole panel down.
+            columns = section_columns(arguments_schema, section_of(spec))
+            key = (id(target), cell_of(name, spec))
+            holder = grid_cells.get(key)
+            if holder is None:
+                holder = qt.QWidget()
+                qt.QVBoxLayout(holder).setContentsMargins(0, 0, 0, 0)
+                placed = len(
+                    [k for k in grid_cells if k[0] == id(target)])
+                target.addWidget(holder, placed // columns, placed % columns)
+                grid_cells[key] = holder
+            holder.layout().addWidget(cell)
         widgets[name] = widget
         if rows is not None:
             rows[name] = (label, field)

@@ -3,20 +3,23 @@ set(MODULE_NAME FlexReg)
 
 #-----------------------------------------------------------------------------
 
-set(FOLDER_LIBRARY FlexReg_utils)
+# FlexRegLib holds the patch PREVIEW, which stays on this machine: dragging a
+# pad recomputes the outline in about 18 ms, and a round trip per gesture is not
+# a preview. The patch and the registration themselves run on the server, so
+# install_pytorch.py is gone with the local torch it existed to fetch.
+set(FOLDER_LIBRARY FlexRegLib)
 
 set(MODULE_PYTHON_RESOURCES
   Resources/Icons/${MODULE_NAME}.png
-  Resources/UI/${MODULE_NAME}.ui
   )
 
 set(MODULE_PYTHON_SCRIPTS
   ${MODULE_NAME}.py
-  FlexReg_utils/__init__.py
-  FlexReg_utils/install_pytorch.py
-  FlexReg_utils/orientation.py
-  FlexReg_utils/transform.py
-  FlexReg_utils/util.py
+  FlexRegLib/__init__.py
+  FlexRegLib/butterfly_preview.py
+  FlexRegLib/orientation.py
+  FlexRegLib/transform.py
+  FlexRegLib/util.py
 )
 
 #-----------------------------------------------------------------------------

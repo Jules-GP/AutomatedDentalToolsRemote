@@ -94,8 +94,12 @@ class JoystickPad(qt.QWidget):
 
         centre_x = (self.x_start + self.x_end) / 2.0
         centre_y = (self.y_start + self.y_end) / 2.0
-        self.x = centre_x
-        self.y = centre_y
+        # NOT self.x / self.y: QWidget already owns those as its position, and
+        # PythonQt refuses the assignment outright -- "Property 'x' of
+        # JoystickPad object is not writable", which takes the whole panel down
+        # with it. Invisible against a stub that is not a real QWidget.
+        self.value_x = centre_x
+        self.value_y = centre_y
         self.default_x = centre_x
         self.default_y = centre_y
 
@@ -119,10 +123,10 @@ class JoystickPad(qt.QWidget):
     def setValues(self, x, y, notify=False):
         x = min(max(float(x), self._x_lo), self._x_hi)
         y = min(max(float(y), self._y_lo), self._y_hi)
-        if x == self.x and y == self.y:
+        if x == self.value_x and y == self.value_y:
             return
-        self.x = x
-        self.y = y
+        self.value_x = x
+        self.value_y = y
         self.update()
         if notify and self.onChanged:
             self.onChanged(self)
@@ -149,8 +153,8 @@ class JoystickPad(qt.QWidget):
 
     def _knobPosition(self):
         left, top, width, height = self._area()
-        fraction_x = (self.x - self.x_start) / (self.x_end - self.x_start)
-        fraction_y = (self.y - self.y_start) / (self.y_end - self.y_start)
+        fraction_x = (self.value_x - self.x_start) / (self.x_end - self.x_start)
+        fraction_y = (self.value_y - self.y_start) / (self.y_end - self.y_start)
         # Screen y grows downwards; the axis end (index 1) is the top.
         return left + fraction_x * width, top + (1.0 - fraction_y) * height
 
@@ -216,9 +220,9 @@ class JoystickPad(qt.QWidget):
             self.onWheel(self, steps)
             return
         if _modifiers() & qt.Qt.ShiftModifier:
-            self.setValues(self.x + self.x_step * steps * self._x_dir, self.y, notify=True)
+            self.setValues(self.value_x + self.x_step * steps * self._x_dir, self.value_y, notify=True)
         else:
-            self.setValues(self.x, self.y + self.y_step * steps * self._y_dir, notify=True)
+            self.setValues(self.value_x, self.value_y + self.y_step * steps * self._y_dir, notify=True)
         self._springNudgeBack()
 
     def keyPressEvent(self, event):
@@ -228,13 +232,13 @@ class JoystickPad(qt.QWidget):
         # Arrows are screen-directional: Right always walks the knob right,
         # whichever way the axis is declared.
         if key == qt.Qt.Key_Left:
-            self.setValues(self.x - self.x_step * self._x_dir, self.y, notify=True)
+            self.setValues(self.value_x - self.x_step * self._x_dir, self.value_y, notify=True)
         elif key == qt.Qt.Key_Right:
-            self.setValues(self.x + self.x_step * self._x_dir, self.y, notify=True)
+            self.setValues(self.value_x + self.x_step * self._x_dir, self.value_y, notify=True)
         elif key == qt.Qt.Key_Up:
-            self.setValues(self.x, self.y + self.y_step * self._y_dir, notify=True)
+            self.setValues(self.value_x, self.value_y + self.y_step * self._y_dir, notify=True)
         elif key == qt.Qt.Key_Down:
-            self.setValues(self.x, self.y - self.y_step * self._y_dir, notify=True)
+            self.setValues(self.value_x, self.value_y - self.y_step * self._y_dir, notify=True)
         else:
             return
         self._springNudgeBack()

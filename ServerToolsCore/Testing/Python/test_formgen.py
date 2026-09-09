@@ -1265,7 +1265,7 @@ class JoystickWidgetTest(unittest.TestCase):
         widget = self._one(_vec2(ui="joystick", x_range=[-15, 15], y_range=[-5, 5], initial=[3, -2]))
 
         self.assertEqual(widget.value(), [3.0, -2.0])
-        self.assertEqual((widget.pad.x, widget.pad.y), (3.0, -2.0))
+        self.assertEqual((widget.pad.value_x, widget.pad.value_y), (3.0, -2.0))
 
     def test_no_initial_opens_at_the_centre_of_both_axes(self):
         widget = self._one(_vec2(ui="joystick", x_range=[0, 10], y_range=[-5, 5]))
@@ -1283,7 +1283,7 @@ class JoystickWidgetTest(unittest.TestCase):
 
         widget.xBox.setValue(7.5)
 
-        self.assertEqual(widget.pad.x, 7.5)
+        self.assertEqual(widget.pad.value_x, 7.5)
 
     def test_moving_the_pad_updates_the_boxes(self):
         widget = self._one(_vec2(ui="joystick", x_range=[-15, 15], y_range=[-5, 5], initial=[0, 0]))
@@ -1311,7 +1311,7 @@ class JoystickWidgetTest(unittest.TestCase):
         pad.setValues(2.0, 1.0, notify=True)
         self.assertEqual(widget.value(), [2.0, 1.0])
         pad.mouseReleaseEvent(None)
-        self.assertEqual((pad.x, pad.y), (0.0, 0.0))  # sprang home
+        self.assertEqual((pad.value_x, pad.value_y), (0.0, 0.0))  # sprang home
 
         # A second push adds to the committed base instead of replacing it.
         pad.setValues(1.0, 1.0, notify=True)

@@ -192,7 +192,13 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # The schema-driven part lives in its own container so it can be thrown
         # away and rebuilt in place — see _buildForm.
         self._rootLayout = rootLayout
-        self._buildForm()
+        # force_refresh: the client caches GET /tools on a singleton that
+        # OUTLIVES this widget, so "Reload" rebuilt the panel from the response
+        # fetched when Slicer started. A tool whose schema changed since -- a
+        # new field, a hidden one, a different layout -- kept rendering the old
+        # one, and only restarting Slicer showed the change. Setup runs once per
+        # module load, so this costs one request per reload.
+        self._buildForm(force_refresh=True)
 
         extraLayout = qt.QVBoxLayout()
         rootLayout.addLayout(extraLayout)
@@ -386,7 +392,15 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
         for sectionName in formgen.sections_of(arguments, extraSections):
             box = ctk.ctkCollapsibleButton()
             box.text = _(sectionName)
-            self._sectionLayouts[sectionName] = qt.QFormLayout(box)
+            # A section the schema lays out in columns gets a grid; everything
+            # else keeps the one-argument-per-row form. FlexReg's four patch
+            # corners are a 2x2 that mirrors the arch, so where a pad sits on
+            # screen is where that corner sits in the mouth.
+            columns = formgen.section_columns(arguments, sectionName)
+            if columns > 1:
+                self._sectionLayouts[sectionName] = qt.QGridLayout(box)
+            else:
+                self._sectionLayouts[sectionName] = qt.QFormLayout(box)
             self._sectionBoxes[sectionName] = box
             rootLayout.addWidget(box)
 

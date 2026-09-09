@@ -156,6 +156,8 @@ class QCursor:
 
 
 class Qt:
+    # A read-only box takes no focus: it reports, it does not accept.
+    NoFocus = 0
     """The Qt namespace enum values design/formgen/joystick reach for."""
 
     ScrollBarAlwaysOff = 1
@@ -395,6 +397,18 @@ class QDoubleSpinBox(QSpinBox):
 
     def setDecimals(self, decimals):
         self.decimals = decimals
+
+    def setReadOnly(self, readOnly):
+        self.readOnly = readOnly
+
+    def setButtonSymbols(self, symbols):
+        self.buttonSymbols = symbols
+
+
+class QAbstractSpinBox:
+    """Only the enum formgen names: a read-only box hides its arrows."""
+
+    NoButtons = 2
 
 
 class QTimer(QObject):

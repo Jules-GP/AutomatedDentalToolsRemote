@@ -373,7 +373,7 @@ TABS_MIN_HEIGHT = 220   # a tab bar plus roughly six rows of options
 # paint colors are FlexReg's pad palette, which was designed against this same
 # blue theme. Hex strings rather than QColors so this module stays importable
 # under the test stubs; the pad wraps them at paint time.
-PAD_SIZE = 128
+PAD_SIZE = 160
 _PAD_LIGHT = {
     "background": "#f4f7fa", "border": "#d3dce5", "grid": "#e3eaf1",
     "text": "#93a2b1", "label": "#6b7c8d", "knob": "#3498db", "trail": "#bcd7ef",

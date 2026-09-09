@@ -1,7 +1,7 @@
 import numpy as np
 import vtk
-from FlexReg_utils.util import vtkMeanTeeth
-from FlexReg_utils.transform import RotationMatrix, TransformSurf
+from .util import vtkMeanTeeth
+from .transform import RotationMatrix, TransformSurf
 
 import sys
 import logging
@@ -39,8 +39,36 @@ def make_vector(points2,point1):
 
 
 
-def orientation_f(source,target,landmarks):
+def rotation_between(source_vector,target_vector):
+    '''
+    Rotation bringing source_vector onto target_vector.
 
+    The dot product is clamped on both ends -- rounding can push it just past
+    -1, where arccos returns NaN -- and the two degenerate cases are handled
+    explicitly : when the vectors are already aligned or exactly opposed their
+    cross product vanishes, and normalising that null axis would turn the whole
+    matrix into NaN without raising anything.
+    '''
+    dt = float(np.clip(np.dot(source_vector,target_vector),-1.0,1.0))
+    axis = cross(source_vector,target_vector)
+
+    if np.linalg.norm(axis) < 1e-8:
+        if dt > 0:
+            return np.identity(3)
+        # opposed : half a turn around any axis perpendicular to the source
+        fallback = np.array([0.0,1.0,0.0]) if abs(source_vector[0]) > 0.9 else np.array([1.0,0.0,0.0])
+        axis = cross(source_vector,fallback)
+
+    return RotationMatrix(axis,np.arccos(dt))
+
+
+def orientation_matrix(source, target, landmarks, label_array='Universal_ID'):
+    '''
+    Compute the 4x4 rigid matrix bringing source into the canonical frame
+    described by target. Same computation as orientation_f, which now builds
+    on it -- the matrix itself is needed to place the patch preview back in
+    the scene without transforming the whole surface.
+    '''
 
     left =landmarks[0]
     middle1 = landmarks[1]
@@ -48,7 +76,10 @@ def orientation_f(source,target,landmarks):
     right = landmarks[3]
 
          
-    meanTeeth = vtkMeanTeeth([int(left),int(middle1),int(middle2),int(right)],property='Universal_ID')
+    # The label array is passed in rather than fixed: a mesh straight out of
+    # Crown_Seg carries `PredictedID`, and hardcoding one name refused it.
+    meanTeeth = vtkMeanTeeth([int(left), int(middle1), int(middle2), int(right)],
+                             property=label_array)
     mean_source = meanTeeth(source)
 
     left_source, middle1_source, middle2_source , right_source = mean_source[left], mean_source[middle1], mean_source[middle2],mean_source[right]
@@ -62,33 +93,15 @@ def orientation_f(source,target,landmarks):
 
 
 
-    dt = np.dot(normal_source,normal_target)
-    if dt > 1.0 :
-        dt = 1.0
-
-    angle_normal = np.arccos(dt)
-
-
-    normal_normal = cross(normal_source,normal_target)
+    matrix_normal = rotation_between(normal_source,normal_target)
 
 
 
-    matrix_normal = RotationMatrix(normal_normal,angle_normal)
-    
-    
-    
     direction_source = np.matmul(matrix_normal,direction_source.T).T
     direction_source = direction_source / np.linalg.norm(direction_source)
 
-    
-    direction_normal = cross(direction_source,direction_target)
 
-    dt = np.dot(direction_source,direction_target)
-    if dt > 1.0:
-        dt = 1.0
-
-    angle_direction = np.arccos(dt)
-    matrix_direction = RotationMatrix(direction_normal ,angle_direction)
+    matrix_direction = rotation_between(direction_source,direction_target)
 
 
 
@@ -110,11 +123,17 @@ def orientation_f(source,target,landmarks):
     matrix = np.concatenate((matrix,np.array([mean]).T),axis=1)
     matrix = np.concatenate((matrix,np.array([[0,0,0,1]])),axis=0)
 
+    return matrix
+
+
+def orientation_f(source,target,landmarks):
+
+    matrix = orientation_matrix(source,target,landmarks)
 
     output = vtk.vtkPolyData()
     output.DeepCopy(source)
 
-    
+
     output = TransformSurf(output,matrix)
 
 
