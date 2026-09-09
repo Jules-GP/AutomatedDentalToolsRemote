@@ -985,11 +985,111 @@ class InputSourcesTest(unittest.TestCase):
             {"name": "MG_test_scan.nii.gz", "kind": "file", "size": 94 * 1024 * 1024},
         ])
         self.widget.setVolumeChoices(["CBCT_patient1", "CBCT_patient2"])
+        # Real files on disk: the caption reports a size, and a stub size would
+        # test the stub.
+        self.temp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.temp, True)
 
-    def test_the_whole_row_is_one_line(self):
-        layout = self.widget.container.layout
-        self.assertIsInstance(layout, qt.QHBoxLayout)
-        self.assertIs(layout.widgets[0], self.widget.combo)
+    def test_the_controls_are_one_line_with_the_caption_under_them(self):
+        """Two lines, and only two: the controls, then what they hold.
+
+        The controls stayed on one line -- that was the point of the row and
+        still is. The caption is a line of its own because it is the only place
+        that can name the file and its kind without eliding one of them.
+        """
+        column = self.widget.container.layout
+        self.assertIsInstance(column, qt.QVBoxLayout)
+        controls, caption = column.widgets
+        self.assertIs(caption, self.widget.caption)
+        self.assertIsInstance(controls.layout, qt.QHBoxLayout)
+        self.assertIs(controls.layout.widgets[0], self.widget.combo)
+
+    def test_the_caption_is_hidden_until_there_is_something_to_say(self):
+        self.assertFalse(self.widget.caption.isVisible())
+        self.assertEqual(self.widget.caption.text, "")
+
+    def test_a_downloaded_test_file_says_its_name_and_its_kind(self):
+        """The complaint this exists for: the row showed
+        `:TestFiles2026-09-09_09+26+53.117/MG_test_scan.nii.gz` and the dropdown
+        had gone back to its prompt, so nothing on screen said which file was
+        loaded, still less that it was a NIfTI volume."""
+        path = os.path.join(self.temp, "MG_test_scan.nii.gz")
+        with open(path, "wb") as handle:
+            handle.write(b"x" * 2048)
+
+        formgen.set_local_path(self.widget, path)
+
+        caption = self.widget.caption.text
+        self.assertIn("MG_test_scan.nii.gz", caption)
+        self.assertIn("NIfTI volume", caption)
+        self.assertIn("2.0 KB", caption)
+        self.assertTrue(self.widget.caption.isVisible())
+
+    def test_it_says_a_fetched_file_is_not_the_user_s_own_copy(self):
+        """A download lands in a session folder swept on exit. A user who takes
+        it for their own copy will look for it next week and not find it."""
+        path = os.path.join(self.temp, "MG_test_scan.nii.gz")
+        open(path, "wb").close()
+
+        formgen.set_local_path(self.widget, path)
+
+        self.assertIn("test data", self.widget.caption.text)
+
+    def test_a_file_the_user_chose_themselves_claims_nothing_of_the_sort(self):
+        path = os.path.join(self.temp, "my_own_patient.nii.gz")
+        open(path, "wb").close()
+
+        formgen.set_local_path(self.widget, path)
+
+        self.assertIn("my_own_patient.nii.gz", self.widget.caption.text)
+        self.assertNotIn("test data", self.widget.caption.text)
+
+    def test_a_surface_reads_as_a_surface(self):
+        path = os.path.join(self.temp, "T1_01_U_segmented.vtk")
+        open(path, "wb").close()
+
+        formgen.set_local_path(self.widget, path)
+
+        self.assertIn("VTK surface", self.widget.caption.text)
+
+    def test_a_name_that_says_nothing_is_not_given_a_kind(self):
+        """Better a bare name than a confident guess at what it holds."""
+        path = os.path.join(self.temp, "measurements.weird")
+        open(path, "wb").close()
+
+        formgen.set_local_path(self.widget, path)
+
+        self.assertIn("measurements.weird", self.widget.caption.text)
+        self.assertNotIn(" - ", self.widget.caption.text.replace(
+            "measurements.weird", ""))
+
+    def test_the_full_path_stays_reachable_as_a_tooltip(self):
+        """The caption names the file; the tooltip says where it sits. Neither
+        costs a line the panel does not have."""
+        path = os.path.join(self.temp, "MG_test_scan.nii.gz")
+        open(path, "wb").close()
+
+        formgen.set_local_path(self.widget, path)
+
+        self.assertEqual(self.widget.local.pathEdit.toolTip(), path)
+
+    def test_an_open_volume_says_it_is_one(self):
+        """Nothing is on disk for it, so `describe_file` has nothing to read --
+        and "no file chosen" would be a lie about a satisfied argument."""
+        self.widget.combo.setCurrentIndex(2)
+
+        self.assertIn("Open volume", self.widget.caption.text)
+        self.assertIn("CBCT_patient1", self.widget.caption.text)
+
+    def test_the_caption_empties_when_the_input_does(self):
+        path = os.path.join(self.temp, "MG_test_scan.nii.gz")
+        open(path, "wb").close()
+        formgen.set_local_path(self.widget, path)
+
+        formgen.set_local_path(self.widget, "")
+
+        self.assertEqual(self.widget.caption.text, "")
+        self.assertFalse(self.widget.caption.isVisible())
 
     def test_entries_are_the_prompt_then_test_files_then_volumes(self):
         combo = self.widget.combo
