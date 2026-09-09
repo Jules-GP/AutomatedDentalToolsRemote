@@ -712,8 +712,10 @@ class MultiChoiceLayoutTest(unittest.TestCase):
         group = self._group("tabs", _LAYOUT_GROUPS)
         tabs = [w for w in group.container.layout.widgets if isinstance(w, qt.QTabWidget)][0]
 
-        for _title, page in tabs.tabs:
-            grid = page.widget.layout
+        for _title, tab in tabs.tabs:
+            # tab -> [scroll area, the group toggle]; the grid is in the area.
+            area = tab.layout.widgets[0]
+            grid = area.widget.layout
             rows = max((row for row, _column in grid.cells), default=-1) + 1
             self.assertEqual(grid.rowStretch.get(rows), 1,
                              "the spare height must go below the options")
@@ -746,7 +748,7 @@ class MultiChoiceLayoutTest(unittest.TestCase):
         large = tabs.maximumHeight()
 
         self.assertLess(small, large)
-        self.assertEqual(small, design.TABS_MIN_HEIGHT)
+        self.assertEqual(small, design.tabs_height_for(1))
 
     def test_the_height_comes_back_when_the_small_tab_does(self):
         few, many = ["a"], ["opt{}".format(i) for i in range(40)]
@@ -758,7 +760,7 @@ class MultiChoiceLayoutTest(unittest.TestCase):
         tabs.setCurrentIndex(1)
         tabs.setCurrentIndex(0)
 
-        self.assertEqual(tabs.maximumHeight(), design.TABS_MIN_HEIGHT)
+        self.assertEqual(tabs.maximumHeight(), design.tabs_height_for(1))
 
     def test_a_long_catalogue_is_capped_rather_than_pushing_apply_off_screen(self):
         many = {"opt{}".format(i): False for i in range(200)}
@@ -773,8 +775,78 @@ class MultiChoiceLayoutTest(unittest.TestCase):
         group = formgen.MultiChoiceGroup(few, "", layout="tabs", groups=None)
         tabs = [w for w in group.container.layout.widgets if isinstance(w, qt.QTabWidget)][0]
 
-        self.assertEqual(tabs.maximumHeight(), design.TABS_MIN_HEIGHT)
-        self.assertLess(design.TABS_MIN_HEIGHT, 220)
+        self.assertEqual(tabs.maximumHeight(), design.tabs_height_for(1))
+        self.assertLess(tabs.maximumHeight(), 220)
+
+    def _toggle_of(self, tabs, index):
+        tab = tabs.tabs[index][1]
+        bar = tab.layout.widgets[1]
+        return bar.layout.widgets[0]
+
+    def test_a_tab_can_be_taken_in_one_click(self):
+        """The original extension's `Switch group selection`, restored.
+
+        Dropping it made a ten-landmark region cost ten clicks, which is what
+        "cocher une region active tous les landmarks de cette region" is asking
+        for. Scoped to the tab: the other groups are untouched.
+        """
+        group = self._group("tabs", _LAYOUT_GROUPS)
+        tabs = [w for w in group.container.layout.widgets if isinstance(w, qt.QTabWidget)][0]
+        first = _LAYOUT_GROUPS["First"]
+
+        # What the OTHER group held before, so the assertion is "untouched"
+        # rather than "off" -- `c` is on by default in this catalogue.
+        others = {option: group.boxes[option].isChecked()
+                  for option in _LAYOUT_GROUPS["Second"]}
+
+        self._toggle_of(tabs, 0).clicked.emit()
+
+        for option in first:
+            self.assertTrue(group.boxes[option].isChecked(), option)
+        for option, before in others.items():
+            self.assertEqual(group.boxes[option].isChecked(), before, option)
+
+    def test_the_same_click_gives_the_group_back(self):
+        group = self._group("tabs", _LAYOUT_GROUPS)
+        tabs = [w for w in group.container.layout.widgets if isinstance(w, qt.QTabWidget)][0]
+        toggle = self._toggle_of(tabs, 0)
+
+        toggle.clicked.emit()
+        toggle.clicked.emit()
+
+        for option in _LAYOUT_GROUPS["First"]:
+            self.assertFalse(group.boxes[option].isChecked(), option)
+
+    def test_the_button_says_which_of_the_two_a_click_will_do(self):
+        """Otherwise it offers to select a group that is already selected."""
+        group = self._group("tabs", _LAYOUT_GROUPS)
+        tabs = [w for w in group.container.layout.widgets if isinstance(w, qt.QTabWidget)][0]
+        toggle = self._toggle_of(tabs, 0)
+        self.assertEqual(toggle.text, formgen.SELECT_GROUP_LABEL)
+
+        toggle.clicked.emit()
+
+        self.assertEqual(toggle.text, formgen.CLEAR_GROUP_LABEL)
+
+    def test_ticking_the_last_box_by_hand_relabels_the_button(self):
+        group = self._group("tabs", _LAYOUT_GROUPS)
+        tabs = [w for w in group.container.layout.widgets if isinstance(w, qt.QTabWidget)][0]
+        toggle = self._toggle_of(tabs, 0)
+
+        for option in _LAYOUT_GROUPS["First"]:
+            group.boxes[option].setChecked(True)
+
+        self.assertEqual(toggle.text, formgen.CLEAR_GROUP_LABEL)
+
+    def test_the_group_toggle_changes_nothing_on_the_wire(self):
+        """Whatever the layout does, `value()` is still the complete state."""
+        group = self._group("tabs", _LAYOUT_GROUPS)
+        tabs = [w for w in group.container.layout.widgets if isinstance(w, qt.QTabWidget)][0]
+
+        self._toggle_of(tabs, 0).clicked.emit()
+
+        self.assertEqual(set(group.value()), set(_LAYOUT_CHOICES))
+        self.assertTrue(all(group.value()[option] for option in _LAYOUT_GROUPS["First"]))
 
     def test_the_chart_stretches_its_rows_but_never_its_columns(self):
         """The columns ARE the arch. Spreading them across whatever width the

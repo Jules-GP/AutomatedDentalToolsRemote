@@ -1001,6 +1001,33 @@ a caller has to hide *together*. An out-parameter rather than a second return
 value because the labels are created inside `build()` and a QFormLayout's label
 for a field cannot be recovered reliably across PythonQt versions.
 
+### One click takes a group, as the original extension's did
+
+`SlicerAutomatedDentalTools` put a **`Switch group selection`** button in every
+landmark tab (`ALI.py`'s `LandmarkTabWidget.ToggleSelection`), alongside its
+global `Select All` / `Clear All`. The generated panel kept the global pair as
+All / None / Default and dropped the per-group one, so asking for the cranial
+base cost ten clicks instead of one.
+
+It is back, per tab, under the name it does rather than the one it had: **Select
+this group** / **Clear this group**, relabelled as the group fills so it never
+offers to select what is already selected — including when the user ticks the
+last box by hand. It sits outside the scroll area, so it does not scroll away
+from the options it acts on, and it is scoped to its own tab.
+
+Nothing changes on the wire: `MultiChoiceGroup.value()` is still the complete
+`{option: checked}` state whatever the layout did, which is the invariant every
+layout here is held to.
+
+**What is deliberately NOT wired: `regions` to `landmarks`.** Ticking a region
+so that it ticks that region's landmarks reads as the obvious next step, and it
+would change what the request MEANS. ALI's own schema says so: *"naming any
+landmark here REPLACES the region selection rather than narrowing it"* — a run
+asking for the Cranial base region and a run naming its ten landmarks are two
+different requests, and the run report distinguishes them (`regions` is empty
+when `landmarks_selected` is not). The per-group toggle gives the same gesture
+inside one argument, without quietly rewriting the other.
+
 ### A multichoice that is proportioned to what it holds
 
 Photographed on ALI and ASO, the check-box groups had three faults, and all

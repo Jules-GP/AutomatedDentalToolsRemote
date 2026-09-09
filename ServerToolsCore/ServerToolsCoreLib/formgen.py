@@ -59,6 +59,12 @@ _UNGROUPED_LABEL = "Other"
 SELECT_ALL_LABEL = "All"
 SELECT_NONE_LABEL = "None"
 SELECT_DEFAULT_LABEL = "Default"
+# Per TAB, and it is the original extension's "Switch group selection" button
+# (ALI.py's LandmarkTabWidget.ToggleSelection) under an honest name: a clinician
+# who wants the cranial base wants ten boxes ticked, not ten clicks. The label
+# says which of the two a click will do, so the button never lies about itself.
+SELECT_GROUP_LABEL = "Select this group"
+CLEAR_GROUP_LABEL = "Clear this group"
 
 # Leads the dropdown of an OPTIONAL scalar `server_selectable` argument, and
 # reads back as "" so collectArgs drops the argument entirely and the server
@@ -432,13 +438,14 @@ def _build_tabs_boxes(column, choices: dict, groups=None) -> dict:
         for index, option in enumerate(options):
             boxes[option] = _make_box(option, choices[option])
             grid.addWidget(boxes[option], index // _TAB_COLUMNS, index % _TAB_COLUMNS)
+        page_boxes = [boxes[option] for option in options]
         # The page is stretched to the scroll area's height, and a QGridLayout
         # hands that slack to its ROWS: measured on ALI's cranial base, eleven
         # 20 px check boxes sat 94 px apart -- three sparse lines floating in a
         # tall empty box. A trailing row and column take the slack instead, so
         # the options pack at the top left and read as a list.
         _pack_to_top_left(grid, rows=-(-len(options) // _TAB_COLUMNS), columns=_TAB_COLUMNS)
-        tabs.addTab(_vertical_scroll(page), group_name or _UNGROUPED_LABEL)
+        tabs.addTab(_group_page(page, page_boxes), group_name or _UNGROUPED_LABEL)
 
     # Fixed both ways, and PER TAB. A minimum alone let the panel's spare
     # vertical space stretch the box -- 380 px for ten cranial landmarks. Sizing
@@ -463,6 +470,52 @@ def _build_tabs_boxes(column, choices: dict, groups=None) -> dict:
 
     column.addWidget(tabs)
     return boxes
+
+
+def _group_page(grid_page, page_boxes):
+    """One tab: its options, and one click that takes the whole group.
+
+    The original extension put a `Switch group selection` button in every
+    landmark tab, and dropping it made a ten-landmark region cost ten clicks.
+    The button sits OUTSIDE the scroll area so it does not scroll away from the
+    options it acts on, and its label says which of the two a click will do --
+    so it cannot lie about itself once the group is already ticked.
+    """
+    container = qt.QWidget()
+    column = qt.QVBoxLayout(container)
+    column.setContentsMargins(0, 0, 0, 0)
+    column.setSpacing(design.SPACING_XS)
+    column.addWidget(_vertical_scroll(grid_page))
+
+    if not page_boxes:
+        return container
+
+    button = design.link_button(SELECT_GROUP_LABEL)
+
+    def relabel(*_args):
+        every = all(box.isChecked() for box in page_boxes)
+        button.setText(CLEAR_GROUP_LABEL if every else SELECT_GROUP_LABEL)
+
+    def flip():
+        wanted = not all(box.isChecked() for box in page_boxes)
+        for box in page_boxes:
+            box.setChecked(wanted)
+        relabel()
+
+    button.clicked.connect(flip)
+    for box in page_boxes:
+        # Ticking the last box by hand must turn the button into "Clear", or it
+        # offers to do what is already done.
+        box.toggled.connect(relabel)
+    relabel()
+
+    row = qt.QWidget()
+    bar = qt.QHBoxLayout(row)
+    bar.setContentsMargins(0, 0, 0, 0)
+    bar.addWidget(button)
+    bar.addStretch(1)
+    column.addWidget(row)
+    return container
 
 
 def _pack_to_top_left(grid, rows: int, columns: int) -> None:

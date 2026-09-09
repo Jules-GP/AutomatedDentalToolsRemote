@@ -405,7 +405,8 @@ CHART_MIN_HEIGHT = 90   # two rows of check boxes plus their group labels
 # further -- so ASO's two arches of teeth and ALI's ten cranial landmarks both
 # sat in a 380 px box that was mostly empty.
 CHECKBOX_ROW_HEIGHT = 24  # measured on a row of the tab grid
-TABS_CHROME_HEIGHT = 52   # the tab bar, the grid's margins and the frame
+TABS_CHROME_HEIGHT = 76   # the tab bar, the grid's margins, the frame, and the
+                          # per-group toggle that sits under every tab
 TABS_MIN_HEIGHT = 96      # the floor a QScrollArea needs: its size hint ignores
                           # its child, so without one it collapses to a few px
 TABS_MAX_HEIGHT = 320     # past this, one argument owns the whole panel
