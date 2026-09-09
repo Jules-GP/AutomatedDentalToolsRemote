@@ -720,21 +720,45 @@ class MultiChoiceLayoutTest(unittest.TestCase):
             self.assertEqual(grid.columnStretch.get(formgen._TAB_COLUMNS), 1,
                              "and the spare width to their right")
 
-    def test_the_tab_box_is_sized_to_what_it_holds(self):
-        """Bounded both ways, and on the TALLEST tab.
-
-        A minimum alone let the panel's spare vertical space stretch the box --
-        380 px for ALI's ten cranial landmarks, mostly empty. Sizing it on the
-        visible tab instead would make the panel jump as the user moves between
-        tabs, which is worse than the empty space it would save.
-        """
+    def test_the_tab_box_is_bounded_both_ways(self):
+        """A minimum alone let the panel's spare vertical space stretch the box
+        -- 380 px for ALI's ten cranial landmarks, mostly empty."""
         group = self._group("tabs", _LAYOUT_GROUPS)
         tabs = [w for w in group.container.layout.widgets if isinstance(w, qt.QTabWidget)][0]
 
-        self.assertEqual(tabs.minimumHeight(), tabs.maximumHeight(),
-                         "a floor without a ceiling is what let the panel stretch it")
+        self.assertEqual(tabs.minimumHeight(), tabs.maximumHeight())
         self.assertGreaterEqual(tabs.maximumHeight(), design.TABS_MIN_HEIGHT)
         self.assertLessEqual(tabs.maximumHeight(), design.TABS_MAX_HEIGHT)
+
+    def test_the_box_follows_the_tab_on_screen(self):
+        """Sizing every tab to the tallest one still left ALI's four-landmark
+        tab in a box built for fifty-seven. The box follows the number of boxes,
+        which is what the reader is actually looking at."""
+        few = ["a"]
+        many = ["opt{}".format(i) for i in range(40)]
+        choices = {option: False for option in few + many}
+        group = formgen.MultiChoiceGroup(
+            choices, "", layout="tabs", groups={"Few": few, "Many": many})
+        tabs = [w for w in group.container.layout.widgets if isinstance(w, qt.QTabWidget)][0]
+
+        small = tabs.maximumHeight()
+        tabs.setCurrentIndex(1)
+        large = tabs.maximumHeight()
+
+        self.assertLess(small, large)
+        self.assertEqual(small, design.TABS_MIN_HEIGHT)
+
+    def test_the_height_comes_back_when_the_small_tab_does(self):
+        few, many = ["a"], ["opt{}".format(i) for i in range(40)]
+        group = formgen.MultiChoiceGroup(
+            {option: False for option in few + many}, "",
+            layout="tabs", groups={"Few": few, "Many": many})
+        tabs = [w for w in group.container.layout.widgets if isinstance(w, qt.QTabWidget)][0]
+
+        tabs.setCurrentIndex(1)
+        tabs.setCurrentIndex(0)
+
+        self.assertEqual(tabs.maximumHeight(), design.TABS_MIN_HEIGHT)
 
     def test_a_long_catalogue_is_capped_rather_than_pushing_apply_off_screen(self):
         many = {"opt{}".format(i): False for i in range(200)}

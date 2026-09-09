@@ -178,9 +178,16 @@ class QTabWidget(QWidget):
     def __init__(self, parent=None):
         QWidget.__init__(self, parent)
         self.tabs = []  # [(title, widget)]
+        self.currentIndex = 0
+        self.currentChanged = Signal()
 
     def addTab(self, widget, title):
         self.tabs.append((title, widget))
+
+    def setCurrentIndex(self, index):
+        """Emits, because the height of the box follows the tab on screen."""
+        self.currentIndex = index
+        self.currentChanged.emit(index)
 
 
 class QCursor:

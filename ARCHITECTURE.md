@@ -1015,11 +1015,24 @@ three came from layout code rather than from any tool:
   layout exists to show.
 - **The box was 380 px whatever it held.** `TABS_MIN_HEIGHT` was a floor with no
   ceiling, so the panel's spare vertical space stretched it further.
-  `design.tabs_height_for` now derives a height from the row count and pins it
-  both ways. Sized on the **tallest** tab, not the visible one: a box that
-  resized as the user moved between tabs would make the whole panel jump under
-  the pointer. Clamped at `TABS_MAX_HEIGHT`, because ALI's `Lower` group is 57
-  landmarks — fifteen rows — and would otherwise push Apply off the screen.
+  `design.tabs_height_for` derives a height from the row count and pins it both
+  ways, **per tab**: sizing every tab to the tallest one was the first attempt
+  and still left ALI's four-landmark tab in a box built for fifty-seven. The box
+  follows the number of boxes, which is what the reader is looking at. Clamped
+  at `TABS_MAX_HEIGHT`, because ALI's `Lower` group is 57 landmarks — fifteen
+  rows — and would otherwise push Apply off the screen. Measured on ALI's
+  cranial base: **380 px → 124 px**. The per-tab heights live in a closure and
+  never on the widget: PythonQt refuses a new attribute on a C++ object and
+  takes the panel down with it.
+- **The frame was Qt's default, and nothing else in the panel looks like it.**
+  No rule covered `QTabWidget::pane` or `QTabBar::tab`, so a heavy square box sat
+  inside a panel built of 6 px radii and hairline borders — and the scroll area
+  inside drew a second, squarer frame just within the first. Both are styled from
+  the tokens now: rounded tab corners, a pane sharing the section's radius, and
+  `QScrollArea` with no border of its own. The selected tab is carried by the
+  accent colour and **not** by a heavier font: Qt sizes a tab from the text it
+  has when the bar is laid out, so bolding the selected one made it wider than
+  its own slot and "Cranial base" rendered as "ranial bas", clipped at both ends.
 - **All / None / Default floated at the far right.** They now start at the left
   edge of the options they act on. Right-aligned, ALI's `regions` bar landed
   directly above the LABEL OF THE NEXT FIELD and read as belonging to that one.

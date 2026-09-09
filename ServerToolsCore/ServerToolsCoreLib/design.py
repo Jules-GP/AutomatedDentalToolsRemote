@@ -154,6 +154,38 @@ def _base_stylesheet(t: dict) -> str:
       color: {t['TEXT']};
     }}
     QSpinBox:focus, QDoubleSpinBox:focus {{ border: 2px solid {t['PRIMARY']}; }}
+    QTabWidget::pane {{
+      background-color: {t['SURFACE']};
+      border: 1px solid {t['BORDER']};
+      border-radius: 6px;
+      /* Lifted by one pixel so the selected tab's open bottom edge meets the
+         pane instead of leaving a seam across it. */
+      top: -1px;
+    }}
+    QTabBar::tab {{
+      background-color: {t['BACKGROUND']};
+      color: {t['TEXT_MUTED']};
+      border: 1px solid {t['BORDER']};
+      border-bottom: none;
+      border-top-left-radius: 6px;
+      border-top-right-radius: 6px;
+      padding: {SPACING_XS}px {SPACING_MD}px;
+      margin-right: 2px;
+      font-weight: 500;
+    }}
+    QTabBar::tab:selected {{
+      background-color: {t['SURFACE']};
+      color: {t['PRIMARY']};
+      /* Same weight as an unselected tab, deliberately. Qt sizes a tab from the
+         text it has when the bar is laid out, so bolding the selected one made
+         it wider than its own slot: "Cranial base" rendered as "ranial bas",
+         clipped at both ends. The surface and the accent colour carry the
+         selection instead, and nothing moves. */
+    }}
+    QTabBar::tab:hover:!selected {{ background-color: {t['SURFACE_HOVER']}; }}
+    /* The pane already draws the frame; a scroll area inside one would draw a
+       second, squarer box just inside the rounded one. */
+    QScrollArea {{ border: none; background-color: transparent; }}
     QCheckBox {{
       color: {t['TEXT']};
       font-weight: 500;

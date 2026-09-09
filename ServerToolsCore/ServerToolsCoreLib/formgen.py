@@ -440,15 +440,26 @@ def _build_tabs_boxes(column, choices: dict, groups=None) -> dict:
         _pack_to_top_left(grid, rows=-(-len(options) // _TAB_COLUMNS), columns=_TAB_COLUMNS)
         tabs.addTab(_vertical_scroll(page), group_name or _UNGROUPED_LABEL)
 
-    # Fixed, both ways. A minimum alone let the panel's spare vertical space
-    # stretch the box -- 380 px for ten cranial landmarks -- and a maximum alone
-    # would let a QScrollArea collapse. Sized on the tallest tab so moving
-    # between tabs never moves anything else on the panel.
-    height = design.tabs_height_for(
-        max((-(-len(options) // _TAB_COLUMNS) for _name, options in grouped), default=1)
-    )
-    tabs.setMinimumHeight(height)
-    tabs.setMaximumHeight(height)
+    # Fixed both ways, and PER TAB. A minimum alone let the panel's spare
+    # vertical space stretch the box -- 380 px for ten cranial landmarks. Sizing
+    # every tab to the TALLEST one instead was the first fix, and it still left
+    # ALI's four-landmark tab in a box built for fifty-seven: the box has to
+    # follow the number of boxes, which is what a reader is looking at.
+    #
+    # The heights live in this closure, never on the widget: PythonQt refuses a
+    # new attribute on a C++ object ("creating new attributes on C++ objects is
+    # not allowed") and takes the panel down with it.
+    heights = [design.tabs_height_for(-(-len(options) // _TAB_COLUMNS))
+               for _name, options in grouped]
+
+    def fit(index=None):
+        chosen = index if isinstance(index, int) else tabs.currentIndex
+        height = heights[chosen] if 0 <= chosen < len(heights) else max(heights, default=0)
+        tabs.setMinimumHeight(height)
+        tabs.setMaximumHeight(height)
+
+    tabs.currentChanged.connect(fit)
+    fit()
 
     column.addWidget(tabs)
     return boxes
