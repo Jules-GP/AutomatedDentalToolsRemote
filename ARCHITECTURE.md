@@ -1001,6 +1001,32 @@ a caller has to hide *together*. An out-parameter rather than a second return
 value because the labels are created inside `build()` and a QFormLayout's label
 for a field cannot be recovered reliably across PythonQt versions.
 
+### A multichoice that is proportioned to what it holds
+
+Photographed on ALI and ASO, the check-box groups had three faults, and all
+three came from layout code rather than from any tool:
+
+- **The options were 94 px apart.** A `QGridLayout` inside a resizable
+  `QScrollArea` is stretched to the area's height and shares that height between
+  its ROWS, so eleven 20 px check boxes became three sparse lines floating in a
+  tall box. `_pack_to_top_left` gives the slack to one trailing row and column
+  instead; measured after, 24 px apart. The chart layout gets the row half only
+  — its COLUMNS are the arch, and spreading them destroys the adjacency that
+  layout exists to show.
+- **The box was 380 px whatever it held.** `TABS_MIN_HEIGHT` was a floor with no
+  ceiling, so the panel's spare vertical space stretched it further.
+  `design.tabs_height_for` now derives a height from the row count and pins it
+  both ways. Sized on the **tallest** tab, not the visible one: a box that
+  resized as the user moved between tabs would make the whole panel jump under
+  the pointer. Clamped at `TABS_MAX_HEIGHT`, because ALI's `Lower` group is 57
+  landmarks — fifteen rows — and would otherwise push Apply off the screen.
+- **All / None / Default floated at the far right.** They now start at the left
+  edge of the options they act on. Right-aligned, ALI's `regions` bar landed
+  directly above the LABEL OF THE NEXT FIELD and read as belonging to that one.
+
+None of this is a color or a token, so both themes are unaffected; it is where
+widgets sit, not how they are painted.
+
 ### The open list, and a PythonQt trap that made a feature dead code
 
 The collapsed box is deliberately narrow (168 px on AREG) so a long entry cannot

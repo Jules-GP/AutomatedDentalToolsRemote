@@ -24,7 +24,7 @@ import qt_stubs
 
 qt, ctk = qt_stubs.install()
 
-from ServerToolsCoreLib import formgen
+from ServerToolsCoreLib import design, formgen
 from ServerToolsCoreLib.client import ToolServerClient
 
 # The server's actual GET /tools payload for example_tool, verbatim.
@@ -700,6 +700,83 @@ class MultiChoiceLayoutTest(unittest.TestCase):
         tabs = [w for w in group.container.layout.widgets if isinstance(w, qt.QTabWidget)]
         self.assertEqual(len(tabs), 1)
         self.assertEqual([title for title, _w in tabs[0].tabs], ["First", "Second", "Other"])
+
+    def test_a_tab_packs_its_options_at_the_top_left(self):
+        """Otherwise the grid shares the scroll area's height between its rows.
+
+        Measured in Slicer on ALI's cranial base: eleven 20 px check boxes sat
+        94 px apart, three sparse lines floating in a tall empty box, which is
+        what "le tableau est moche, pas bien proportionne" describes. Qt has no
+        pack flag; a trailing stretched row and column is the idiom.
+        """
+        group = self._group("tabs", _LAYOUT_GROUPS)
+        tabs = [w for w in group.container.layout.widgets if isinstance(w, qt.QTabWidget)][0]
+
+        for _title, page in tabs.tabs:
+            grid = page.widget.layout
+            rows = max((row for row, _column in grid.cells), default=-1) + 1
+            self.assertEqual(grid.rowStretch.get(rows), 1,
+                             "the spare height must go below the options")
+            self.assertEqual(grid.columnStretch.get(formgen._TAB_COLUMNS), 1,
+                             "and the spare width to their right")
+
+    def test_the_tab_box_is_sized_to_what_it_holds(self):
+        """Bounded both ways, and on the TALLEST tab.
+
+        A minimum alone let the panel's spare vertical space stretch the box --
+        380 px for ALI's ten cranial landmarks, mostly empty. Sizing it on the
+        visible tab instead would make the panel jump as the user moves between
+        tabs, which is worse than the empty space it would save.
+        """
+        group = self._group("tabs", _LAYOUT_GROUPS)
+        tabs = [w for w in group.container.layout.widgets if isinstance(w, qt.QTabWidget)][0]
+
+        self.assertEqual(tabs.minimumHeight(), tabs.maximumHeight(),
+                         "a floor without a ceiling is what let the panel stretch it")
+        self.assertGreaterEqual(tabs.maximumHeight(), design.TABS_MIN_HEIGHT)
+        self.assertLessEqual(tabs.maximumHeight(), design.TABS_MAX_HEIGHT)
+
+    def test_a_long_catalogue_is_capped_rather_than_pushing_apply_off_screen(self):
+        many = {"opt{}".format(i): False for i in range(200)}
+        group = formgen.MultiChoiceGroup(many, "", layout="tabs", groups=None)
+        tabs = [w for w in group.container.layout.widgets if isinstance(w, qt.QTabWidget)][0]
+
+        self.assertEqual(tabs.maximumHeight(), design.TABS_MAX_HEIGHT)
+
+    def test_a_short_catalogue_no_longer_gets_a_tall_empty_box(self):
+        """The floor used to be 220 px whatever the content held."""
+        few = {"a": False, "b": True}
+        group = formgen.MultiChoiceGroup(few, "", layout="tabs", groups=None)
+        tabs = [w for w in group.container.layout.widgets if isinstance(w, qt.QTabWidget)][0]
+
+        self.assertEqual(tabs.maximumHeight(), design.TABS_MIN_HEIGHT)
+        self.assertLess(design.TABS_MIN_HEIGHT, 220)
+
+    def test_the_chart_stretches_its_rows_but_never_its_columns(self):
+        """The columns ARE the arch. Spreading them across whatever width the
+        panel happens to have destroys the adjacency the layout exists to show,
+        which is why only the rows take the slack here."""
+        group = self._group("grid", _LAYOUT_GROUPS)
+        area = [w for w in group.container.layout.widgets
+                if isinstance(w, qt.QScrollArea)][0]
+        grid = area.widget.layout
+
+        self.assertEqual(grid.rowStretch.get(grid.rowCount()), 1)
+        self.assertEqual(grid.columnStretch, {})
+
+    def test_all_none_default_sit_under_the_options_not_at_the_far_edge(self):
+        """Right-aligned they floated at the edge of the panel with nothing to
+        attach to -- and on ALI the `regions` bar landed directly above the
+        LABEL OF THE NEXT FIELD, reading as if it belonged to that one."""
+        group = self._group(None)
+        bar = group.container.layout.widgets[-1]
+
+        labels = [w.text for w in bar.layout.widgets if hasattr(w, "text")]
+        self.assertEqual(labels[:3], [formgen.SELECT_ALL_LABEL,
+                                      formgen.SELECT_NONE_LABEL,
+                                      formgen.SELECT_DEFAULT_LABEL])
+        self.assertEqual(bar.layout.stretches, [1],
+                         "one trailing stretch, so the links start at the left")
 
     def test_grid_puts_one_group_per_row_with_its_options_as_columns(self):
         # The chart property: ASO asks for teeth "spread across the arch", and

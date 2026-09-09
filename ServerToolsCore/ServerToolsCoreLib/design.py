@@ -367,7 +367,28 @@ def link_button(text: str) -> qt.QPushButton:
 # out inside one collapses to a few pixels unless it is told how tall it is.
 # Both are floors, not fixed heights: the layouts still grow with the panel.
 CHART_MIN_HEIGHT = 90   # two rows of check boxes plus their group labels
-TABS_MIN_HEIGHT = 220   # a tab bar plus roughly six rows of options
+
+# A tab box is sized to what it HOLDS, between these two. It used to be one
+# fixed floor of 220 px that the panel's spare vertical space then stretched
+# further -- so ASO's two arches of teeth and ALI's ten cranial landmarks both
+# sat in a 380 px box that was mostly empty.
+CHECKBOX_ROW_HEIGHT = 24  # measured on a row of the tab grid
+TABS_CHROME_HEIGHT = 52   # the tab bar, the grid's margins and the frame
+TABS_MIN_HEIGHT = 96      # the floor a QScrollArea needs: its size hint ignores
+                          # its child, so without one it collapses to a few px
+TABS_MAX_HEIGHT = 320     # past this, one argument owns the whole panel
+
+
+def tabs_height_for(rows: int) -> int:
+    """How tall a tab box has to be to show `rows` of check boxes.
+
+    Sized on the TALLEST tab, not the visible one: a box that resized as the
+    user moved between tabs would make the whole panel jump under the pointer.
+    Clamped both ways -- ALI's landmarks run to fifteen rows and would otherwise
+    push Apply off the screen.
+    """
+    wanted = TABS_CHROME_HEIGHT + max(rows, 1) * CHECKBOX_ROW_HEIGHT
+    return max(TABS_MIN_HEIGHT, min(wanted, TABS_MAX_HEIGHT))
 
 # Joystick pad (joystick.JoystickPad). The side is FlexReg's PAD_SIZE; the
 # paint colors are FlexReg's pad palette, which was designed against this same

@@ -292,8 +292,11 @@ class MultiChoiceGroup:
         bar = qt.QWidget()
         row = qt.QHBoxLayout(bar)
         row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(design.SPACING_XS)
-        row.addStretch(1)
+        row.setSpacing(design.SPACING_MD)
+        # Left, under the options they act on. Right-aligned they floated at the
+        # far edge of the panel with nothing to attach to -- and on ALI the
+        # `regions` bar landed directly above the LABEL OF THE NEXT FIELD, so it
+        # read as belonging to the argument below it.
         for label, action in (
             (SELECT_ALL_LABEL, lambda: self.setAll(True)),
             (SELECT_NONE_LABEL, lambda: self.setAll(False)),
@@ -302,6 +305,7 @@ class MultiChoiceGroup:
             button = design.link_button(label)
             button.clicked.connect(action)
             row.addWidget(button)
+        row.addStretch(1)
         return bar
 
     def setAll(self, checked: bool) -> None:
@@ -401,6 +405,10 @@ def _build_grid_boxes(column, choices: dict, groups=None) -> dict:
             boxes[option] = _make_box(option, choices[option])
             grid.addWidget(boxes[option], row_index, offset + 1)
 
+    # Rows only: the COLUMNS are the arch, and letting them take the slack would
+    # spread a tooth chart across whatever width the panel happens to have --
+    # destroying the adjacency this layout exists to show.
+    grid.setRowStretch(grid.rowCount(), 1)
     column.addWidget(_horizontal_scroll(grid_container))
     return boxes
 
@@ -415,7 +423,8 @@ def _build_tabs_boxes(column, choices: dict, groups=None) -> dict:
     """
     tabs = qt.QTabWidget()
     boxes = {}
-    for group_name, options in _grouped(choices, groups):
+    grouped = list(_grouped(choices, groups))
+    for group_name, options in grouped:
         page = qt.QWidget()
         grid = qt.QGridLayout(page)
         grid.setContentsMargins(design.SPACING_SM, design.SPACING_SM, design.SPACING_SM, design.SPACING_SM)
@@ -423,10 +432,39 @@ def _build_tabs_boxes(column, choices: dict, groups=None) -> dict:
         for index, option in enumerate(options):
             boxes[option] = _make_box(option, choices[option])
             grid.addWidget(boxes[option], index // _TAB_COLUMNS, index % _TAB_COLUMNS)
+        # The page is stretched to the scroll area's height, and a QGridLayout
+        # hands that slack to its ROWS: measured on ALI's cranial base, eleven
+        # 20 px check boxes sat 94 px apart -- three sparse lines floating in a
+        # tall empty box. A trailing row and column take the slack instead, so
+        # the options pack at the top left and read as a list.
+        _pack_to_top_left(grid, rows=-(-len(options) // _TAB_COLUMNS), columns=_TAB_COLUMNS)
         tabs.addTab(_vertical_scroll(page), group_name or _UNGROUPED_LABEL)
+
+    # Fixed, both ways. A minimum alone let the panel's spare vertical space
+    # stretch the box -- 380 px for ten cranial landmarks -- and a maximum alone
+    # would let a QScrollArea collapse. Sized on the tallest tab so moving
+    # between tabs never moves anything else on the panel.
+    height = design.tabs_height_for(
+        max((-(-len(options) // _TAB_COLUMNS) for _name, options in grouped), default=1)
+    )
+    tabs.setMinimumHeight(height)
+    tabs.setMaximumHeight(height)
 
     column.addWidget(tabs)
     return boxes
+
+
+def _pack_to_top_left(grid, rows: int, columns: int) -> None:
+    """Send a grid's spare space to one trailing row and column.
+
+    A QGridLayout inside a resizable QScrollArea is stretched to the area's
+    height and shares that height between its rows -- so eleven check boxes in a
+    220 px box end up 94 px apart. Qt has no "pack" flag; an empty stretched row
+    and column at the far edge is the idiom, and the same reason every
+    hand-written `.ui` in this repo ends with a vertical spacer.
+    """
+    grid.setRowStretch(max(rows, 0), 1)
+    grid.setColumnStretch(max(columns, 0), 1)
 
 
 def _horizontal_scroll(widget):

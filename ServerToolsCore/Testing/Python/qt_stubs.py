@@ -63,6 +63,18 @@ class QObject:
     def setMinimumHeight(self, height):
         self._minimum_height = height
 
+    def setMaximumHeight(self, height):
+        """Recorded because it is half of a real property: a tab box with only a
+        MINIMUM is stretched by the panel's spare vertical space, which is how
+        ten cranial landmarks ended up in a 380 px box."""
+        self._maximum_height = height
+
+    def minimumHeight(self):
+        return getattr(self, "_minimum_height", 0)
+
+    def maximumHeight(self):
+        return getattr(self, "_maximum_height", None)
+
     def setFixedSize(self, width, height):
         self._fixed_size = (width, height)
 
@@ -84,6 +96,7 @@ class QLayout(QObject):
     def __init__(self, parent=None):
         QObject.__init__(self)
         self.widgets = []
+        self.stretches = []
         if parent is not None:
             parent.layout = self
 
@@ -96,14 +109,19 @@ class QLayout(QObject):
     def addWidget(self, widget, stretch=0):
         self.widgets.append(widget)
 
+    def addStretch(self, stretch=1):
+        """Recorded, not discarded. WHERE the stretch sits is the difference
+        between links that start at the left edge of the options they act on and
+        links that float at the far edge of the panel."""
+        self.stretches.append(stretch)
+
 
 class QVBoxLayout(QLayout):
     pass
 
 
 class QHBoxLayout(QLayout):
-    def addStretch(self, _stretch=0):
-        pass
+    pass
 
 
 class QGridLayout(QLayout):
@@ -114,10 +132,25 @@ class QGridLayout(QLayout):
     def __init__(self, parent=None):
         QLayout.__init__(self, parent)
         self.cells = {}  # {(row, column): widget}
+        # Which trailing row/column was given the layout's spare space. Recorded
+        # rather than ignored: without a stretch, a grid inside a resizable
+        # scroll area spreads its rows across the whole height -- ALI's check
+        # boxes sat 94 px apart -- and that is a property worth a test.
+        self.rowStretch = {}
+        self.columnStretch = {}
 
     def addWidget(self, widget, row=0, column=0, *_args):
         self.widgets.append(widget)
         self.cells[(row, column)] = widget
+
+    def setRowStretch(self, row, stretch):
+        self.rowStretch[row] = stretch
+
+    def setColumnStretch(self, column, stretch):
+        self.columnStretch[column] = stretch
+
+    def rowCount(self):
+        return max((row for row, _column in self.cells), default=-1) + 1
 
 
 class QScrollArea(QWidget):
