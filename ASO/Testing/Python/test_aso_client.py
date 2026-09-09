@@ -695,7 +695,9 @@ class ServerSelectablesRefreshTest(unittest.TestCase):
         self.client.models.append("CBCT_landmark_models")
         self.panel._refreshServerSelectables()
         self.assertEqual(
-            self._referenceItems()[0], formgen.ServerFileInput.CHOOSE_OPTION
+            # `reference` is a MODEL row: its entries are the value that
+            # travels, never a download, so the prompt says so.
+            self._referenceItems()[0], formgen.ServerFileInput.PROMPT_MODEL
         )
 
     def test_a_hosted_reference_is_a_name_and_is_never_downloaded(self):

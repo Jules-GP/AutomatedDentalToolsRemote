@@ -737,12 +737,24 @@ class ServerFileInput:
     chosen entry to the first one in the list.
     """
 
-    # First entry, and the state that means "nothing picked FROM THIS LIST":
-    # a combo box cannot express an empty selection in a way a user reads as
-    # deliberate. It is deliberately the same words as the path field's own
-    # placeholder - one affordance, one prompt - and it is not a source. What
-    # says whether the argument has been given anything is the path field.
+    # First entry, and the state that means "nothing picked FROM THIS LIST": a
+    # combo box cannot express an empty selection in a way a user reads as
+    # deliberate.
+    #
+    # It used to be the path field's own placeholder, word for word, on the
+    # reasoning that two halves of one row should say one thing. Photographed,
+    # that reasoning does not survive: the panel shows "Select a file or a
+    # folder" twice, side by side, and the dropdown reads as a duplicate of the
+    # field rather than as the one place a tool's test data is reached from.
+    # Nobody opens a control that appears to repeat its neighbour.
+    #
+    # So the prompt now NAMES WHAT IS INSIDE, and this constant is only the
+    # fallback for a list with nothing in it. `_prompt` picks the words.
     CHOOSE_OPTION = PATH_PLACEHOLDER
+    PROMPT_HOSTED = "Test data..."
+    PROMPT_VOLUMES = "Open volume..."
+    PROMPT_BOTH = "Test data or open volume..."
+    PROMPT_MODEL = "Model on the server..."
 
     def __init__(self, local, hosted_downloads=True, on_hosted=None):
         self.local = local
@@ -781,7 +793,8 @@ class ServerFileInput:
         # its longest entry on every rebuild.
         self.combo.sizeAdjustPolicy = qt.QComboBox.AdjustToMinimumContentsLengthWithIcon
         self.combo.minimumContentsLength = 14
-        self.combo.setToolTip(PATH_PLACEHOLDER)
+        # Replaced on every rebuild, once the list knows what it holds.
+        self.combo.setToolTip(self.CHOOSE_OPTION)
         self.combo.addItems([self.CHOOSE_OPTION])
         row.addWidget(self.combo)
         row.addWidget(row_widget(local), 1)
@@ -830,9 +843,28 @@ class ServerFileInput:
         download is unpacked and whether it is loaded into the scene."""
         return list(self._hosted)
 
+    def _prompt(self) -> str:
+        """The first entry, naming what the list holds rather than repeating the
+        field beside it.
+
+        A model row is its own case: those entries are not fetched, they are the
+        value, so "Test data" would be wrong twice over.
+        """
+        if self._hosted and not self.hosted_downloads:
+            return self.PROMPT_MODEL
+        if self._hosted and self._volume_names:
+            return self.PROMPT_BOTH
+        if self._hosted:
+            return self.PROMPT_HOSTED
+        if self._volume_names:
+            return self.PROMPT_VOLUMES
+        # Nothing to offer: the list is inert, and saying so by naming a source
+        # it does not have would be worse than the neutral words.
+        return self.CHOOSE_OPTION
+
     def _entries(self) -> list:
         return (
-            [self.CHOOSE_OPTION]
+            [self._prompt()]
             + [hosted_entry_label(entry) for entry in self._hosted]
             + [OPEN_VOLUME_PREFIX + name for name in self._volume_names]
         )
@@ -850,6 +882,7 @@ class ServerFileInput:
             if previous in entries:
                 self.combo.setCurrentIndex(entries.index(previous))
             self._widenPopup(entries)
+            self.combo.setToolTip(entries[0])
         finally:
             self._syncing = False
 

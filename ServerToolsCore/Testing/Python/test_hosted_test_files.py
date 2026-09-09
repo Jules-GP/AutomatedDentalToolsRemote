@@ -310,7 +310,9 @@ class HostedTestFileTest(unittest.TestCase):
         self.assertEqual(
             [combo.itemText(i) for i in range(combo.count)],
             [
-                formgen.ServerFileInput.CHOOSE_OPTION,
+                # Names what the list holds; the path field beside it keeps
+                # its own words (see ServerFileInput.CHOOSE_OPTION).
+                formgen.ServerFileInput.PROMPT_HOSTED,
                 "CBCT_FullyAuto  (folder, 339 MB)",
                 "MG_test_scan.nii.gz  (file, 94 MB)",
             ],

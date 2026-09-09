@@ -905,6 +905,9 @@ _VOLUME_SPEC = {
     "choices": None, "initial": None,
 }
 
+# Same shape, but the entries are WEIGHTS: never downloaded, named in the run.
+_MODEL_SPEC = dict(_VOLUME_SPEC, server_selectable="model")
+
 
 class AcceptsVolumeTest(unittest.TestCase):
     """Which file arguments may be satisfied by a volume open in the scene:
@@ -1096,18 +1099,58 @@ class InputSourcesTest(unittest.TestCase):
         self.assertEqual(
             [combo.itemText(i) for i in range(combo.count)],
             [
-                formgen.ServerFileInput.CHOOSE_OPTION,
+                formgen.ServerFileInput.PROMPT_BOTH,
                 "MG_test_scan.nii.gz  (file, 94 MB)",
                 formgen.OPEN_VOLUME_PREFIX + "CBCT_patient1",
                 formgen.OPEN_VOLUME_PREFIX + "CBCT_patient2",
             ],
         )
 
-    def test_the_prompt_is_the_path_fields_own_words(self):
-        """One affordance, one prompt: the dropdown's first entry and the empty
-        path field say the same thing, because they mean the same thing."""
-        self.assertEqual(formgen.ServerFileInput.CHOOSE_OPTION, formgen.PATH_PLACEHOLDER)
-        self.assertEqual(self.widget.local.pathEdit.placeholderText, formgen.PATH_PLACEHOLDER)
+    def test_the_prompt_names_what_the_list_holds(self):
+        """It used to be the path field's own placeholder, word for word.
+
+        Photographed, the panel showed "Select a file or a folder" twice side by
+        side, and the dropdown read as a duplicate of the field beside it rather
+        than as the one place a tool's test data is reached from. Nobody opens a
+        control that appears to repeat its neighbour.
+        """
+        self.assertEqual(self.widget.combo.itemText(0),
+                         formgen.ServerFileInput.PROMPT_BOTH)
+        self.assertNotEqual(self.widget.combo.itemText(0),
+                            self.widget.local.pathEdit.placeholderText)
+
+    def test_the_prompt_offers_only_what_is_there(self):
+        """Naming a source the list does not have would be worse than saying
+        nothing: a user opens it, finds no test data, and stops trusting it."""
+        self.widget.setVolumeChoices([])
+        self.assertEqual(self.widget.combo.itemText(0),
+                         formgen.ServerFileInput.PROMPT_HOSTED)
+
+        self.widget.setChoices([])
+        self.widget.setVolumeChoices(["CBCT_patient1"])
+        self.assertEqual(self.widget.combo.itemText(0),
+                         formgen.ServerFileInput.PROMPT_VOLUMES)
+
+    def test_an_empty_list_keeps_the_neutral_words(self):
+        self.widget.setChoices([])
+        self.widget.setVolumeChoices([])
+        self.assertEqual(self.widget.combo.itemText(0),
+                         formgen.ServerFileInput.CHOOSE_OPTION)
+
+    def test_a_model_row_says_model_because_nothing_is_fetched(self):
+        """Those entries are not test data: they are the value that travels,
+        and the weights never leave the server."""
+        widget = formgen.file_widget(_MODEL_SPEC, "single_file")
+        widget.setChoices([{"name": "AMASSS_Models", "kind": "folder", "size": None}])
+
+        self.assertEqual(widget.combo.itemText(0),
+                         formgen.ServerFileInput.PROMPT_MODEL)
+
+    def test_the_prompt_is_also_the_collapsed_box_tooltip(self):
+        """The box stays narrow on purpose, so the prompt is the first thing
+        elided -- the tooltip is where it survives."""
+        self.assertEqual(self.widget.combo.toolTip(),
+                         formgen.ServerFileInput.PROMPT_BOTH)
 
     def test_the_default_state_names_nothing(self):
         self.assertEqual(self.widget.hosted_name(), "")
@@ -1185,7 +1228,9 @@ class InputSourcesTest(unittest.TestCase):
         self.widget.setVolumeChoices([])
 
         self.assertEqual(self.widget.volume_name(), "")
-        self.assertEqual(self.widget.combo.currentText, formgen.ServerFileInput.CHOOSE_OPTION)
+        # The prompt follows what is left in the list: the test files.
+        self.assertEqual(self.widget.combo.currentText,
+                         formgen.ServerFileInput.PROMPT_HOSTED)
 
     def test_a_refresh_starts_no_download_of_its_own(self):
         """clear()+addItems reselects index 0 and would otherwise fire the

@@ -1001,6 +1001,34 @@ a caller has to hide *together*. An out-parameter rather than a second return
 value because the labels are created inside `build()` and a QFormLayout's label
 for a field cannot be recovered reliably across PythonQt versions.
 
+### The dropdown says what is inside it
+
+Its first entry used to be the path field's own placeholder, word for word, on
+the reasoning that two halves of one row should say one thing. Photographed, the
+panel showed **"Select a file or a folder" twice, side by side** — and the
+dropdown read as a duplicate of the field beside it rather than as the one place
+a tool's test data is reached from. Nobody opens a control that appears to repeat
+its neighbour.
+
+The prompt now names what the list holds, and only what is actually in it:
+
+| the list holds | it says |
+|---|---|
+| test files and open volumes | `Test data or open volume...` |
+| test files only | `Test data...` |
+| open volumes only | `Open volume...` |
+| a hosted MODEL | `Model on the server...` |
+| nothing | the neutral words, unchanged |
+
+A model row is its own case because those entries are never fetched — they ARE
+the value, and the weights stay on the server — so "test data" would be wrong
+twice over. And naming a source the list does not have would be worse than
+saying nothing: a user opens it, finds no test data, and stops trusting it.
+
+The collapsed box stays narrow on purpose (`minimumContentsLength`), so the
+prompt is the first thing elided; it is repeated as the box's tooltip, refreshed
+on every rebuild.
+
 ### The caption: which file, and what kind of file
 
 The row shows a path, and a path is the wrong thing to show. A downloaded test

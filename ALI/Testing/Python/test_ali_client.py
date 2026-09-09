@@ -513,7 +513,7 @@ class TestServerSideInput(unittest.TestCase):
 
     def test_the_prompt_leads_and_names_nothing(self):
         self.assertEqual(
-            self.widget.combo.itemText(0), formgen.ServerFileInput.CHOOSE_OPTION
+            self.widget.combo.itemText(0), formgen.ServerFileInput.PROMPT_HOSTED
         )
         self.assertEqual(self.widget.combo.count, 3)
         self.assertEqual(self.widget.hosted_name(), "")
