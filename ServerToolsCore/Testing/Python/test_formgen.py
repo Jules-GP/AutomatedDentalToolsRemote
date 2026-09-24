@@ -1203,7 +1203,24 @@ class LabelTest(unittest.TestCase):
         }
         layout = qt.QFormLayout()
         formgen.build(schema, layout)
-        self.assertEqual([label.text for label, _f in layout.rows], ["Plain *", "A Real Name"])
+
+        shown = [re.sub(r"<[^>]+>", "", label.text) for label, _f in layout.rows]
+        self.assertEqual(shown, ["Plain *", "A Real Name"])
+
+    def test_a_required_field_wears_its_asterisk_in_the_danger_colour(self):
+        """The one red on a panel at rest. In the label's own muted grey it
+        was the same weight as punctuation, on a form of eight rows."""
+        label = design.required_label("Scan")
+
+        self.assertIn(design.tokens()["DANGER"], label.text)
+        self.assertTrue(label.text.endswith("*</span>"), label.text)
+
+    def test_a_label_the_tool_wrote_is_escaped_into_it(self):
+        """Rich text for one character, and the words beside it come from the
+        schema: a `<` in one of them would otherwise be markup."""
+        label = design.required_label("a < b")
+
+        self.assertIn("a &lt; b", label.text)
 
 
 class SectionTest(unittest.TestCase):
@@ -2454,7 +2471,7 @@ class ValueFieldTest(unittest.TestCase):
         field = design.value_field("Nothing selected")
         empty = field._stylesheet
 
-        design.set_input_filled(design.input_card(), field, True)
+        design.set_value_filled(field, True)
 
         self.assertIn("font-weight: 500", empty)
         self.assertIn("font-weight: 600", field._stylesheet)
@@ -2471,7 +2488,7 @@ class ValueFieldTest(unittest.TestCase):
 
     def test_a_filled_row_uses_the_body_colour_not_the_muted_one(self):
         field = design.value_field("Folder: /data/cohort")
-        design.set_input_filled(design.input_card(), field, True)
+        design.set_value_filled(field, True)
 
         self.assertIn(design.tokens()["TEXT"], field._stylesheet)
         self.assertNotIn(design.tokens()["TEXT_MUTED"], field._stylesheet)
@@ -2718,11 +2735,16 @@ class InputCardTest(unittest.TestCase):
         self.assertIn(design.tokens()["SURFACE"], row.container._stylesheet)
         self.assertIn("border: none", row.container._stylesheet)
 
-    def test_a_filled_row_takes_the_accent(self):
+    def test_a_filled_row_says_so_in_its_TEXT_and_not_in_its_colour(self):
+        """The block used to turn an accent tint, which put a pale blue slab
+        on the panel for every input that was doing its job."""
         row = formgen.FileOrFolderInput()
+        empty = row.container._stylesheet
         row.setCurrentPath(self.scan)
 
-        self.assertIn(design.tokens()["ACCENT_SOFT"], row.container._stylesheet)
+        self.assertEqual(row.container._stylesheet, empty, "the block moved")
+        self.assertNotIn(design.tokens()["ACCENT_SOFT"], row.container._stylesheet)
+        self.assertIn("font-weight: 600", row.caption._stylesheet)
 
     def test_emptying_it_again_takes_the_accent_back(self):
         row = formgen.FileOrFolderInput()
@@ -2731,17 +2753,15 @@ class InputCardTest(unittest.TestCase):
 
         self.assertNotIn(design.tokens()["ACCENT_SOFT"], row.container._stylesheet)
 
-    def test_only_the_fill_changes_with_the_state(self):
+    def test_the_block_never_moves_at_all(self):
         """It is the outermost thing on the row: anything that changed its box
         would move every control inside it by a pixel the moment a file was
         chosen."""
         row = formgen.FileOrFolderInput()
         empty = row.container._stylesheet
         row.setCurrentPath(self.scan)
-        filled = row.container._stylesheet
 
-        strip = lambda sheet: re.sub(r"background-color:[^;]*;", "", sheet)
-        self.assertEqual(strip(empty), strip(filled))
+        self.assertEqual(row.container._stylesheet, empty)
 
     def test_it_styles_itself_and_not_the_controls_inside_it(self):
         """Every child of the card holds a control that has to keep the
@@ -2749,15 +2769,17 @@ class InputCardTest(unittest.TestCase):
         self.assertTrue(formgen.FileOrFolderInput().container._stylesheet
                         .startswith("#inputCard"))
 
-    def test_a_wrapped_row_paints_the_box_the_panel_actually_shows(self):
+    def test_a_wrapped_row_says_what_it_holds_on_the_line_the_panel_shows(self):
         """The picker inside a `ServerFileInput` is never added to a layout --
-        only its buttons are -- so painting its own card would leave the box a
-        clinician can see saying the row is still empty."""
+        only its value field and its button are -- and that value field is the
+        wrapper's own, which is why writing through the wrapper reaches it."""
         widget = formgen.file_widget(_VOLUME_SPEC, "file_or_folder")
         widget.setChoices([{"name": "MG_test_scan.nii.gz", "kind": "file", "size": 94}])
         formgen.set_local_path(widget, self.scan)
 
-        self.assertIn(design.tokens()["ACCENT_SOFT"], widget.container._stylesheet)
+        self.assertIs(widget.caption, widget.local.caption)
+        self.assertIn("patient1.nii.gz", widget.caption.text)
+        self.assertIn("font-weight: 600", widget.caption._stylesheet)
 
     def test_a_scene_pick_fills_the_row_though_no_path_was_chosen(self):
         """An open volume is exported at upload time and has no local path at
@@ -2769,7 +2791,8 @@ class InputCardTest(unittest.TestCase):
         widget.sceneCombo.setCurrentIndex(1)
 
         self.assertTrue(widget.volume_name(), "the scene pick did not register")
-        self.assertIn(design.tokens()["ACCENT_SOFT"], widget.container._stylesheet)
+        self.assertIn("CBCT_patient1", widget.caption.text)
+        self.assertIn("font-weight: 600", widget.caption._stylesheet)
 
     def test_the_line_inside_it_says_the_same_thing_the_box_does(self):
         """The box says THAT the row is satisfied and the line says WITH WHAT.
@@ -3094,11 +3117,10 @@ class OutputFolderRowTest(unittest.TestCase):
 
         self.assertIn(self.temp, self.row.caption.text)
 
-    def test_it_never_takes_the_accent(self):
-        """The accent answers "have I given this tool its scan yet?", and this
-        row fills ITSELF in the moment the panel opens -- so accented it would
-        be a blue block sitting permanently on every panel, saying something
-        that was never in doubt and pulling the eye off the rows where it is."""
+    def test_no_row_takes_an_accent_fill_any_more(self):
+        """It did -- white empty, an accent tint once a scan landed -- which
+        put a pale blue block on the panel for every input that was doing its
+        job. The line inside carries the state now."""
         formgen.set_local_path(self.row, self.temp)
 
         self.assertNotIn(design.tokens()["ACCENT_SOFT"], self.row.container._stylesheet)
@@ -3110,9 +3132,8 @@ class OutputFolderRowTest(unittest.TestCase):
 
         self.assertIn("font-weight: 600", self.row.caption._stylesheet)
 
-    def test_an_input_row_is_the_other_way_round(self):
-        """The same two decisions, both inverted -- which is what makes
-        `destination` one flag rather than two."""
+    def test_an_input_row_shows_the_name_instead(self):
+        """The other half of `destination`, and the reason it is one flag."""
         scan = os.path.join(self.temp, "patient1.nii.gz")
         with open(scan, "wb") as handle:
             handle.write(b"0" * 16)
@@ -3122,7 +3143,6 @@ class OutputFolderRowTest(unittest.TestCase):
 
         self.assertNotIn(self.temp, row.caption.text)
         self.assertIn("patient1.nii.gz", row.caption.text)
-        self.assertIn(design.tokens()["ACCENT_SOFT"], row.container._stylesheet)
 
     def test_it_offers_one_primary_select_button(self):
         self.assertEqual(self.row.selectButton.text, formgen.SELECT_LABEL)

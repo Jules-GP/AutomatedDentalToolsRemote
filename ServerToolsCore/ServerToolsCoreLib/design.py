@@ -7,6 +7,7 @@ exactly one place in the whole extension.
 """
 
 import hashlib
+import html
 import os
 import tempfile
 
@@ -715,7 +716,21 @@ def section_title(text: str, explained: bool = False) -> qt.QLabel:
 
 
 def required_label(text: str, explained: bool = False) -> qt.QLabel:
-    return section_title(f"{text} *", explained)
+    """A field the run cannot start without, marked with a RED asterisk.
+
+    The star was the label's own muted grey, which is the colour of the word
+    beside it -- so on a panel of eight rows the one mark that says "this one
+    is not optional" was the same weight as punctuation. In the danger colour
+    it is the only red on a panel at rest, and a reader looking for what is
+    still missing finds it without reading a line.
+
+    Rich text for exactly one character, and the label's own words are ESCAPED
+    on the way in: they come from the tool's schema, and a `<` in one of them
+    would otherwise be markup rather than a bracket.
+    """
+    t = tokens()
+    star = '<span style="color: {}; font-weight: 700;">*</span>'.format(t["DANGER"])
+    return section_title("{} {}".format(html.escape(text), star), explained)
 
 
 def optional_label(text: str, explained: bool = False) -> qt.QLabel:
@@ -865,8 +880,7 @@ def _paint_selection(field, filled: bool) -> None:
 # and the question a clinician actually has ("have I given this tool its scan
 # yet?") was answered only by a line of 12pt text among all of it.
 #
-# The card is the answer: ONE block per input, holding every way of filling it,
-# and the block itself carries the state.
+# The card is the answer: ONE block per input, holding every way of filling it.
 #
 # **It is the one thing on this panel with no line round it**, and that is a
 # decision rather than an oversight. Everything else here is outlined because
@@ -876,9 +890,12 @@ def _paint_selection(field, filled: bool) -> None:
 # already says where it starts. An outline added to it was the fifth line in a
 # row of four, drawn round something that was not in any doubt.
 #
-# So the state is two fills: white while the row is empty, the accent tint once
-# it holds something. Far enough apart to read at a glance and both quiet
-# enough to sit under a form.
+# **And it does not change colour when the row is filled.** It did -- white
+# empty, an accent tint once a scan landed -- which put a pale blue block on
+# the panel for every input that was doing its job. The state is carried by
+# the LINE inside it instead: "Nothing selected" muted and medium, the file
+# name at full strength and semi-bold. That is the difference between a panel
+# that says what it holds and a panel that celebrates it.
 
 
 def input_card():
@@ -891,34 +908,28 @@ def input_card():
     """
     card = qt.QFrame()
     card.setObjectName("inputCard")
-    set_input_filled(card, None, False)
+    _paint_card(card)
     return card
 
 
-def set_input_filled(card, caption, filled: bool, accent: bool = True) -> None:
-    """Repaint an input row for whether it now holds something.
-
-    Takes the caption too, and paints both from one call, because they are one
-    statement: the block says THAT the row is satisfied and the line inside it
-    says WITH WHAT, and a panel where those two disagreed would be worse than
-    either alone. `caption` may be None for a card built before its label.
-
-    `accent` is what a row turns when it is satisfied, and it answers a
-    question: *have I given this tool its scan yet?* A row that fills ITSELF in
-    has no such question -- the output folder is proposed the moment the panel
-    opens and is never empty -- so it passes False and keeps the neutral edge.
-    Accented, it would be a blue block sitting permanently on every panel,
-    saying something that was never in doubt and drawing the eye away from the
-    rows where it is. The TEXT still goes to full strength either way: that
-    says what is there, which is worth reading in both cases.
-    """
+def _paint_card(card) -> None:
+    """The block an input row lives in: white, unlined, and the SAME whatever
+    the row holds. See the note above."""
     t = tokens()
-    ground = t["ACCENT_SOFT"] if (filled and accent) else t["SURFACE"]
     card.setStyleSheet(
-        f"#inputCard {{ background-color: {ground}; border: none;"
+        f"#inputCard {{ background-color: {t['SURFACE']}; border: none;"
         f" border-radius: {RADIUS_LG}px;"
         f" padding: {SPACING_MD}px {SPACING_MD}px {SPACING_XS}px {SPACING_MD}px; }}"
     )
+
+
+def set_value_filled(caption, filled: bool) -> None:
+    """Repaint an input row's value for whether it now holds something.
+
+    The row's whole state, in one line of text. It used to be two -- the block
+    turning an accent tint as well -- and the block no longer moves, so this
+    is it.
+    """
     if caption is not None:
         _paint_selection(caption, filled)
 

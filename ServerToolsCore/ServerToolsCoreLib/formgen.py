@@ -1186,14 +1186,10 @@ class FileOrFolderInput:
     def __init__(self, extensions=(), modes=("file", "folder"), destination=False):
         self._extensions = tuple(extensions)
         # Whether this row is where results GO rather than where inputs come
-        # from. Two things follow from it and both are the same reason -- a
-        # destination is about a PLACE, not about a file:
-        #
-        #   * it shows the whole path. A patient's scan is identified by its
-        #     name and the directory above it is noise; a folder results are
-        #     about to be written into is identified by WHERE it is, and the
-        #     name alone (`out`, `Documents`) says nothing.
-        #   * it never takes the accent. See design.set_input_filled.
+        # from. It shows the whole PATH: a patient's scan is identified by its
+        # name and the directory above it is noise, while a folder results are
+        # about to be written into is identified by where it is, and the name
+        # alone (`out`, `Documents`) says nothing.
         self._destination = bool(destination)
         # Which KINDS this argument accepts. Published rather than consumed and
         # forgotten: the sources wrapper turns them into segments, and it can
@@ -1309,12 +1305,9 @@ class FileOrFolderInput:
             # `patient1.nii.gz`. The whole path is on the row's tooltip.
             self.container.setToolTip(path)
         self.caption.setText(text)
-        # The card and the line inside it are one statement, so they are
-        # painted together and can never disagree about whether the row is
-        # satisfied. A wrapper's own words are never NOTHING_CHOSEN unless
-        # nothing was chosen, which is what makes that comparison the answer.
-        design.set_input_filled(self.container, self.caption,
-                                text != NOTHING_CHOSEN, accent=not self._destination)
+        # A wrapper's own words are never NOTHING_CHOSEN unless nothing was
+        # chosen, which is what makes that comparison the answer.
+        design.set_value_filled(self.caption, text != NOTHING_CHOSEN)
 
     def onPathChanged(self, callback) -> None:
         self._listeners.append(callback)
@@ -2005,13 +1998,12 @@ class ServerFileInput:
                   else text != NOTHING_CHOSEN)
         describe = getattr(self.local, "describe", None)
         if describe is not None:
-            # It owns the caption -- detached into this column, but still its
-            # widget -- so it paints that, and this paints the box around it.
+            # It owns the caption -- moved onto this row, but still its widget
+            # -- and painting it is part of what `describe` does.
             describe(text)
-            design.set_input_filled(self.container, None, filled)
         else:
             self.caption.setText(text or NOTHING_CHOSEN)
-            design.set_input_filled(self.container, self.caption, filled)
+            design.set_value_filled(self.caption, filled)
 
     def _is_fetched(self, path: str) -> bool:
         """Whether this path is one of the hosted entries this row offered.
