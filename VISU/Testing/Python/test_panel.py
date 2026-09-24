@@ -1387,5 +1387,79 @@ class HandingBackTest(unittest.TestCase):
                          "the second pass inherited the first one's writes")
 
 
+class FinishedResultsTest(unittest.TestCase):
+    """What this module is asked when a run is OVER rather than paused.
+
+    A tool panel with a finished cohort hands the folder here instead of
+    pushing the files into the scene itself: this is the one thing in the
+    extension that can put a cohort in front of a reader a patient at a time,
+    with each scan's landmarks and labels on it.
+    """
+
+    def setUp(self):
+        del SCENE[:]
+        self.root = tempfile.TemporaryDirectory()
+        self.addCleanup(self.root.cleanup)
+        self.widget = VISU.VISUWidget()
+        self.widget.setup()
+
+    def folder(self, paths, name="results"):
+        tree(self.root.name, paths)
+        return os.path.join(self.root.name, name)
+
+    # -- can this be shown at all? ---------------------------------------
+
+    def test_a_folder_of_scans_is_reviewable(self):
+        self.assertTrue(VISU.reviewable(self.folder(["results/p1_scan.nii.gz"])))
+
+    def test_a_folder_of_things_it_cannot_open_is_not(self):
+        """A spreadsheet or a report. The caller loads those into the scene
+        itself, exactly as it always did -- which is why this has to answer
+        honestly rather than accept anything."""
+        self.assertFalse(VISU.reviewable(self.folder(["results/measurements.csv"])))
+
+    def test_a_folder_that_is_not_there_is_not(self):
+        self.assertFalse(VISU.reviewable(os.path.join(self.root.name, "nowhere")))
+        self.assertFalse(VISU.reviewable(""))
+
+    # -- and what it says once it is -------------------------------------
+
+    def test_a_finished_run_gets_no_continue_button(self):
+        """Nothing is waiting on this reader, and the caller says so by
+        passing no callback at all."""
+        self.widget.openForReview(self.folder(["results/p1_scan.nii.gz"]), None,
+                                  origin={"tool": "AMASSS", "run": 2, "done": True})
+
+        self.assertFalse(self.widget.continueButton.isVisible())
+        self.assertEqual(len(self.widget.cases), 1)
+
+    def test_it_does_not_tell_a_reader_a_finished_run_is_holding(self):
+        """"It is waiting for you" is what a paused run says, and it is a lie
+        that costs a reader a GPU job's worth of hurry."""
+        self.widget.openForReview(self.folder(["results/p1_scan.nii.gz"]), None,
+                                  origin={"tool": "AMASSS", "run": 2, "done": True})
+
+        self.assertIn("AMASSS", self.widget.originLabel.text)
+        self.assertNotIn("waiting", self.widget.originLabel.text)
+
+    def test_a_finished_run_leaves_the_folder_picker_alone(self):
+        """A paused run hides it: repointing mid-review is how a correction
+        ends up measured against files the run never produced. A finished one
+        holds nothing hostage, and a reader may want the run before it."""
+        self.widget.openForReview(self.folder(["results/p1_scan.nii.gz"]), None,
+                                  origin={"tool": "AMASSS", "run": 2, "done": True})
+
+        self.assertTrue(self.widget.folderBox.isVisible())
+
+    def test_a_paused_run_still_hides_it_and_still_says_it_is_waiting(self):
+        self.widget.openForReview(self.folder(["results/p1_scan.nii.gz"]),
+                                  lambda _reviewed: None,
+                                  origin={"tool": "AMASSS", "step": "ALI_CBCT",
+                                          "run": 2})
+
+        self.assertFalse(self.widget.folderBox.isVisible())
+        self.assertIn("waiting", self.widget.originLabel.text)
+
+
 if __name__ == "__main__":
     unittest.main()

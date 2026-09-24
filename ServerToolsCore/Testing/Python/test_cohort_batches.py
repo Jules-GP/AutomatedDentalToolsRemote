@@ -11,6 +11,7 @@ a top-level entry is never opened, and nothing is ever lost between the batches.
 
 import json
 import os
+import types
 import shutil
 import sys
 import tempfile
@@ -1026,3 +1027,175 @@ class CohortPanelTest(unittest.TestCase):
         self.assertIn(design.tokens()["SURFACE"], view.frame.styleSheet)
         self.assertIn("1px solid {}".format(design.tokens()["BORDER"]),
                       view.frame.styleSheet)
+
+
+class ResultsOpenOnceAtTheEndTest(unittest.TestCase):
+    """Ticking "load the results" opens the REVIEW module on them, and does it
+    once, when the last batch has landed.
+
+    Two things were wrong before, and both came from the same place: a module
+    asks for its results from `handleResult`, which runs once per BATCH. A
+    cohort divided into five opened its results five times -- the first while
+    four batches were still uploading, each on the quarter of the patients
+    that batch happened to hold -- and the last of the five pointed into
+    `batch_05/`, which the merge deletes moments later.
+    """
+
+    def setUp(self):
+        from ServerToolsCoreLib.base_widget import ServerToolWidgetBase
+
+        self.root = tempfile.mkdtemp(prefix="cohort_")
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.opened = []
+        self.loaded = []
+
+        panel = ServerToolWidgetBase.__new__(ServerToolWidgetBase)
+        panel.TOOL_NAME = "AMASSS"
+        panel._resultsWanted = False
+        panel._producedRoot = os.path.join(self.root, "batch_03")
+        panel._loadResults = lambda: self.loaded.append("scene")
+        panel._hasReviewableResults = lambda folder: self.reviewable
+        panel._openReviewer = self._openReviewer
+        self.panel = panel
+        self.reviewable = True
+
+    def _openReviewer(self, folder, on_continue, rewind=None, origin=None):
+        self.opened.append({"folder": folder, "on_continue": on_continue,
+                            "origin": dict(origin or {})})
+        return True
+
+    def _cohort(self, batches=3):
+        from ServerToolsCoreLib.base_widget import _Cohort
+
+        cohort = _Cohort(batches, total_scans=12)
+        cohort.root = self.root
+        return cohort
+
+    @staticmethod
+    def _run(cohort=None, number=1):
+        return types.SimpleNamespace(cohort=cohort, number=number)
+
+    # -- the gate ------------------------------------------------------
+
+    def test_an_ordinary_run_is_shown_straight_away(self):
+        self.panel._maybeLoadResults = None  # unused here; the ask is direct
+        self.panel._resultsWanted = True
+
+        self.panel._showRequestedResults(self._run())
+
+        self.assertEqual(len(self.opened), 1)
+
+    def test_a_cohort_shows_nothing_until_its_last_batch(self):
+        cohort = self._cohort(batches=3)
+        self.panel._resultsWanted = True
+
+        for _batch in range(2):
+            cohort.finished += 1
+            self.panel._showRequestedResults(self._run(cohort))
+
+        self.assertEqual(self.opened, [], "opened while batches were in flight")
+        self.assertTrue(self.panel._resultsWanted, "the ask was spent early")
+
+    def test_and_opens_exactly_once_when_it_does(self):
+        cohort = self._cohort(batches=3)
+        self.panel._resultsWanted = True
+
+        for _batch in range(3):
+            cohort.finished += 1
+            self.panel._showRequestedResults(self._run(cohort))
+        # A fourth call -- a stray success, a panel refreshed -- must not
+        # reopen what the reader is already looking at.
+        self.panel._showRequestedResults(self._run(cohort))
+
+        self.assertEqual(len(self.opened), 1)
+
+    def test_it_opens_the_merged_cohort_and_not_the_last_batch(self):
+        """`batch_03/` is what `_producedRoot` holds and what the merge has
+        just deleted."""
+        cohort = self._cohort(batches=1)
+        cohort.finished = 1
+        self.panel._resultsWanted = True
+
+        self.panel._showRequestedResults(self._run(cohort))
+
+        self.assertEqual(self.opened[0]["folder"], self.root)
+
+    def test_an_unticked_box_opens_nothing(self):
+        cohort = self._cohort(batches=1)
+        cohort.finished = 1
+
+        self.panel._showRequestedResults(self._run(cohort))
+
+        self.assertEqual(self.opened, [])
+        self.assertEqual(self.loaded, [])
+
+    # -- what the reviewer is told -------------------------------------
+
+    def test_nothing_is_waiting_on_this_reader(self):
+        """The one difference between this and a checkpoint, and the reviewer
+        reads it off that single argument: no Continue button."""
+        self.panel._resultsWanted = True
+
+        self.panel._showRequestedResults(self._run(number=4))
+
+        self.assertIsNone(self.opened[0]["on_continue"])
+        self.assertTrue(self.opened[0]["origin"]["done"])
+        self.assertEqual(self.opened[0]["origin"]["run"], 4)
+        self.assertEqual(self.opened[0]["origin"]["tool"], "AMASSS")
+
+    # -- and when it cannot ---------------------------------------------
+
+    def test_results_the_viewer_cannot_show_go_to_the_scene(self):
+        """A spreadsheet, a transform, a folder it could not read. The scene
+        is where those still go, exactly as they always did."""
+        self.reviewable = False
+        self.panel._resultsWanted = True
+
+        self.panel._showRequestedResults(self._run())
+
+        self.assertEqual(self.opened, [])
+        self.assertEqual(self.loaded, ["scene"])
+
+    def test_a_viewer_that_will_not_open_falls_back_too(self):
+        self.panel._openReviewer = lambda *args, **kwargs: False
+        self.panel._resultsWanted = True
+
+        self.panel._showRequestedResults(self._run())
+
+        self.assertEqual(self.loaded, ["scene"])
+
+    def test_the_scene_fallback_follows_the_files_the_merge_moved(self):
+        """`_producedFiles` is the last archive's member list, under that
+        batch's own folder -- which the merge has just deleted. Loading from
+        it opens nothing and reports every file as missing."""
+        os.makedirs(os.path.join(self.root, "batch_03"))
+        landed = os.path.join(self.root, "p9_seg.nii.gz")
+        with open(landed, "wb") as handle:
+            handle.write(b"0")
+        self.panel._producedFiles = [os.path.join(self.root, "batch_03", "p9_seg.nii.gz")]
+        self.reviewable = False
+        cohort = self._cohort(batches=1)
+        cohort.finished = 1
+        self.panel._resultsWanted = True
+
+        self.panel._showRequestedResults(self._run(cohort))
+
+        self.assertEqual(self.panel._producedFiles, [landed])
+        self.assertEqual(self.panel._producedRoot, self.root)
+
+    def test_a_file_the_merge_did_not_move_is_left_alone(self):
+        """Two batches wrote one name: the merge keeps the one already at the
+        destination, so the original is still where it was."""
+        os.makedirs(os.path.join(self.root, "batch_03"))
+        kept = os.path.join(self.root, "batch_03", "p9_seg.nii.gz")
+        with open(kept, "wb") as handle:
+            handle.write(b"0")
+        self.panel._producedFiles = [kept]
+        self.reviewable = False
+        cohort = self._cohort(batches=1)
+        cohort.finished = 1
+        self.panel._resultsWanted = True
+
+        self.panel._showRequestedResults(self._run(cohort))
+
+        self.assertEqual(self.panel._producedFiles, [kept])

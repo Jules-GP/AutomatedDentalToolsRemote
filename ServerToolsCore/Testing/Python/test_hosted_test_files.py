@@ -1203,7 +1203,17 @@ class LoadResultsCheckBoxTest(unittest.TestCase):
         panel = cls.__new__(cls)
         panel._producedFiles = []
         panel._producedRoot = ""
+        panel._resultsWanted = False
+        # Nothing the viewer can show, so every test below falls through to
+        # the scene -- which is what these tests are about. The viewer's own
+        # path is `test_cohort_batches`.
+        panel._hasReviewableResults = lambda _folder: False
         return panel
+
+    @staticmethod
+    def _run():
+        """A run that is nobody's batch, which is every ordinary run."""
+        return types.SimpleNamespace(cohort=None, number=1)
 
     def test_a_module_with_loadable_results_gets_the_box(self):
         panel = self._panel(self._Loadable)
@@ -1246,9 +1256,24 @@ class LoadResultsCheckBoxTest(unittest.TestCase):
         panel._producedFiles = ["/out/scan.nii.gz"]
 
         panel._maybeLoadResults()
+        panel._showRequestedResults(self._run())
         self.assertEqual(_util.loaded, [])
 
-    def test_leaving_it_ticked_loads_the_results(self):
+    def test_the_box_records_the_ask_and_does_not_act_on_it(self):
+        """A module calls `_maybeLoadResults` from `handleResult`, which runs
+        once per BATCH. Acting there opened a cohort's results once per batch,
+        the first of them while the rest were still uploading."""
+        _util.loaded = []
+        panel = self._panel(self._Loadable)
+        panel._addLoadResultsCheckBox(qt.QVBoxLayout())
+        panel._producedFiles = ["/out/scan.nii.gz"]
+
+        panel._maybeLoadResults()
+
+        self.assertTrue(panel._resultsWanted)
+        self.assertEqual(_util.loaded, [], "shown before the run was over")
+
+    def test_leaving_it_ticked_loads_the_results_once_the_run_is_over(self):
         _util.loaded = []
         _util.shown = None
         panel = self._panel(self._Loadable)
@@ -1256,7 +1281,10 @@ class LoadResultsCheckBoxTest(unittest.TestCase):
         panel._producedFiles = ["/out/scan.nii.gz"]
 
         panel._maybeLoadResults()
+        panel._showRequestedResults(self._run())
+
         self.assertEqual(_util.loaded, [("labelmap", "/out/scan.nii.gz")])
+        self.assertFalse(panel._resultsWanted, "the ask outlived the showing")
 
     def test_a_panel_that_never_built_the_box_loads_nothing_and_does_not_raise(self):
         """`_maybeLoadResults` is safe to call from a module that was never
@@ -1267,6 +1295,7 @@ class LoadResultsCheckBoxTest(unittest.TestCase):
         panel._producedFiles = ["/out/table.csv"]
 
         panel._maybeLoadResults()
+        panel._showRequestedResults(self._run())
         self.assertEqual(_util.loaded, [])
 
 

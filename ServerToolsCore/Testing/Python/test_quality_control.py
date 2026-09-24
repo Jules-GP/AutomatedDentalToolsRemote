@@ -907,6 +907,22 @@ class ReviewModuleTest(unittest.TestCase):
                          "the seam is a signature, so a change to it is a "
                          "change to what both modules agree on")
 
+    def test_it_also_answers_whether_a_folder_is_worth_opening(self):
+        """The second half of the seam, and it is asked BEFORE a finished run
+        hands its results over: what that viewer can open is the viewer's
+        business, and a panel guessing it from its own `_LOADABLE` is a second
+        place deciding the same thing."""
+        module = os.path.join(_CORE, "..",
+                              ServerToolWidgetBase.REVIEW_MODULE,
+                              ServerToolWidgetBase.REVIEW_MODULE + ".py")
+        with open(module, encoding="utf-8") as handle:
+            tree = ast.parse(handle.read())
+        entry = [node for node in tree.body
+                 if isinstance(node, ast.FunctionDef) and node.name == "reviewable"]
+        self.assertEqual(len(entry), 1,
+                         "the review module must offer reviewable()")
+        self.assertEqual([arg.arg for arg in entry[0].args.args], ["folder"])
+
 
 class SlotLayoutTest(unittest.TestCase):
     """`_checkpointSlots` alone: the two shapes the archive can have."""

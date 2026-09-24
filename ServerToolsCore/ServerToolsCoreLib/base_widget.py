@@ -360,6 +360,11 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self._suggestedOutput = None
         # What the LAST run wrote, from the archive itself. See _loadResults.
         self._producedFiles = []
+        # Set when a module asks for its results to be shown, cleared when
+        # they have been. It exists because the ASK and the SHOWING are no
+        # longer the same moment: a cohort asks once per batch and is shown
+        # once, at the end. See `_maybeLoadResults`.
+        self._resultsWanted = False
         # Where those files were unpacked. Kept so a member's path
         # INSIDE the archive can be read back -- which is how the
         # chain's own results are told apart from the run's.
@@ -1433,13 +1438,22 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
         layout.addWidget(self._loadResultsCheckBox)
 
     def _maybeLoadResults(self) -> None:
-        """Load what the run produced, unless the user unticked the box.
+        """Ask for what the run produced to be shown, unless the box is off.
 
-        Safe to call from a module that never built the box: an absent box
-        means nothing was offered, and nothing is loaded.
+        **It records the request; it does not act on it.** A module calls this
+        from `handleResult`, which runs once per BATCH -- so on a cohort
+        divided into five, this used to open the results five times, each on
+        the quarter of the patients that batch happened to hold, the first of
+        them while four more were still uploading. And the last of the five
+        pointed into `batch_05/`, which `_mergeCohortFolders` deletes moments
+        later.
+
+        What actually shows them is `_showRequestedResults`, once nothing more
+        is coming. Safe to call from a module that never built the box: an
+        absent box means nothing was offered, and nothing is shown.
         """
         if self._loadResultsCheckBox and self._loadResultsCheckBox.isChecked():
-            self._loadResults()
+            self._resultsWanted = True
 
     # The report a tool writes beside its results. Empty when the module has
     # none. Named rather than derived from TOOL_NAME, because two spellings are
@@ -1775,6 +1789,12 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
             slicer.util.errorDisplay(str(exc))
             return
 
+        # Whatever the last Apply asked for, this one answers for itself. A
+        # run that failed after its module had asked would otherwise leave the
+        # request standing, and the NEXT run would open a viewer nobody ticked
+        # the box for.
+        self._resultsWanted = False
+
         prepared = []
         try:
             for batch in batches:
@@ -2062,6 +2082,9 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # After `handleResult`, so the last batch's own results are on disk
         # and its report has been folded into the cohort's.
         self._finishCohort(run)
+        # And after THAT, so what is shown is the merged cohort rather than
+        # the last batch of it -- in a folder that still exists.
+        self._showRequestedResults(run)
         # Move the SUGGESTION on, now that this folder holds a result. The next
         # run then lands beside this one instead of into it, which is the whole
         # reason the folders are numbered. A path the user chose is left alone
@@ -2072,6 +2095,101 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # the next Apply somewhere the current cohort is still writing.
         if not run.cohort:
             self._suggestOutputFolder()
+
+    def _showRequestedResults(self, run) -> None:
+        """Show what the run produced -- once there is no more of it coming.
+
+        The gate is the cohort, not the run: a batch finishing is not the work
+        finishing, and a clinician who pressed Apply on forty patients asked
+        to see forty. A run that is nobody's batch passes straight through,
+        which is every ordinary run.
+
+        The folder is the COHORT's root and not this batch's. They are the
+        same directory for an undivided run, and for a divided one the batch
+        folder has just been merged away -- so this is the difference between
+        opening the results and opening a path that no longer exists.
+
+        Nothing here runs on the failure path. A run that ended in an error
+        dialog has said its piece, and following it with a viewer is a second
+        thing to dismiss; the results that did land are on disk and the folder
+        is named in the panel.
+        """
+        if not self._resultsWanted:
+            return
+        cohort = getattr(run, "cohort", None)
+        if cohort is not None and not cohort.complete:
+            return
+        self._resultsWanted = False
+        folder = cohort.root if cohort is not None and cohort.root else self._producedRoot
+        if self._reviewResults(folder, run):
+            return
+        # Nothing the viewer can show -- a spreadsheet, a transform, a folder
+        # it could not read. The scene is where those still go, and for a
+        # cohort they are no longer where the last batch left them.
+        self._rehomeProducedFiles(folder)
+        self._loadResults()
+
+    def _rehomeProducedFiles(self, root: str) -> None:
+        """Point the last batch's file list at where the merge put them.
+
+        `_producedFiles` is the last archive's own member list, under that
+        batch's own folder -- and `_mergeCohortFolders` has just moved every
+        one of them up and deleted the folder. Loading from it opens nothing
+        and reports every file as missing.
+
+        A path that did NOT move is left alone: the merge keeps the file
+        already at the destination when two batches wrote one name, so the
+        original is the one that is still there and still what the merged
+        report refers to.
+        """
+        if not self._producedRoot or not root or root == self._producedRoot:
+            return
+        moved = []
+        for path in self._producedFiles:
+            landing = os.path.join(root, os.path.relpath(path, self._producedRoot))
+            moved.append(landing if os.path.exists(landing) else path)
+        self._producedFiles = moved
+        self._producedRoot = root
+
+    def _reviewResults(self, folder: str, run) -> bool:
+        """Open a finished run's results in the review module.
+
+        The same module a checkpoint is reviewed in, and deliberately so: it
+        is the one thing in this extension that can put a cohort in front of a
+        reader a patient at a time, with each scan's landmarks and labels on
+        it. The panel's own `_loadResults` cannot -- it pushes files into the
+        scene, refuses past `MAX_RESULTS_TO_LOAD` of them, and renders exactly
+        one scan of however many were produced.
+
+        `on_continue` is None: nothing is waiting on this reader. That is the
+        whole difference between this and a checkpoint, and the reviewer reads
+        it off that one argument -- no Continue button, and `done` in the
+        origin so it does not tell a reader a finished run is holding.
+        """
+        if not folder or not self._hasReviewableResults(folder):
+            return False
+        return self._openReviewer(
+            folder, None,
+            origin={"tool": self.TOOL_NAME, "step": "",
+                    "run": getattr(run, "number", None), "done": True})
+
+    def _hasReviewableResults(self, folder: str) -> bool:
+        """Whether the review module could show this folder at all.
+
+        Asked of the module rather than worked out from `_LOADABLE`: what that
+        viewer opens is the viewer's business, and two places deciding it is
+        two places that drift. Resolved by name at call time, like
+        `_openReviewer`, so a deployment shipping without it still runs every
+        tool it does have -- and answers False, which lands the results in the
+        scene exactly as they always did.
+        """
+        try:
+            module = importlib.import_module(self.REVIEW_MODULE)
+            return bool(module.reviewable(folder))
+        except Exception as exc:  # noqa: BLE001 - reported, never raised
+            logger.warning("Could not ask '%s' about %s: %s",
+                           self.REVIEW_MODULE, folder, exc)
+            return False
 
     def _finishCohort(self, run) -> None:
         """Put a divided cohort back in one folder, once its last batch has

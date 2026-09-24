@@ -487,6 +487,29 @@ def hosted_choices(found) -> tuple:
     return sorted(entries, key=lambda entry: entry["name"]), offered
 
 
+def reviewable(folder: str) -> bool:
+    """Whether this folder holds anything this module could show.
+
+    Asked by a caller that has somewhere ELSE to send the reader -- a tool
+    panel that has just finished a run, and that will load the files into the
+    scene itself if the answer is no. It is a question about the folder, so it
+    is answered here, by the same index the panel would build; guessing it on
+    the other side of the seam means two places deciding what this module can
+    open, and they drift.
+
+    Never raises, for the same reason `open_for_review` does not: the caller
+    is finishing a run, and a folder that cannot be walked must cost it a
+    viewer rather than the run.
+    """
+    if not folder:
+        return False
+    try:
+        return bool(index.build([(SOURCE, folder)]))
+    except Exception as exc:  # noqa: BLE001 - answered False, never raised
+        logger.warning("Could not index %s: %s", folder, exc)
+        return False
+
+
 def open_for_review(folder: str, on_continue, rewind=None, origin=None) -> bool:
     """Bring this module up on `folder`, with a Continue that calls back.
 
@@ -1023,13 +1046,22 @@ class VISUWidget(ScriptedLoadableModuleWidget):
         `origin` is `{"tool", "step", "run"}` -- the tool whose panel opened
         this, the checkpoint it stopped at written as it was published
         (`ALI_CBCT`, or `ASO/ALI_CBCT` for one inside a callee), and the
-        run's number on that panel.
+        run's number on that panel -- plus an optional `done`.
+
+        **`done` says the run is OVER**, and it changes two things. The
+        sentence stops claiming something is waiting, which would be a lie
+        that costs a reader a GPU job's worth of hurry; and the folder picker
+        stays, because nothing is holding results hostage to this panel and a
+        reader who wants to compare an earlier run may.
         """
         self._origin = dict(origin or {})
         opened_by_a_run = bool(self._origin)
-        # Hidden rather than disabled: a greyed control still reads as
-        # something that could be used, and there is nothing to decide here.
-        self.folderBox.setVisible(not opened_by_a_run)
+        finished = bool(self._origin.get("done"))
+        # Hidden rather than disabled while a run WAITS: a greyed control still
+        # reads as something that could be used, and repointing the picker
+        # mid-review is how a correction ends up measured against files the run
+        # never produced. A finished run has no such stake in the folder.
+        self.folderBox.setVisible(not opened_by_a_run or finished)
         self.originLabel.setVisible(opened_by_a_run)
         if not opened_by_a_run:
             return
@@ -1037,6 +1069,12 @@ class VISUWidget(ScriptedLoadableModuleWidget):
         step = self._origin.get("step") or ""
         number = self._origin.get("run")
         where = "{} / {}".format(tool, step) if step else tool
+        if finished:
+            self.originLabel.text = (
+                _("Results of run {number} of {where}.")
+                .format(number=number, where=where) if number
+                else _("Results of {where}.").format(where=where))
+            return
         self.originLabel.text = (
             _("Reviewing run {number} of {where}. It is waiting for you.")
             .format(number=number, where=where) if number
