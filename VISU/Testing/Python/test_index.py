@@ -463,3 +463,40 @@ class RegisteredComparisonTest(unittest.TestCase):
 
         self.assertEqual([view.compare for view in views], [None])
         self.assertEqual(views[0].anchor.name, "P1_Reg.nii.gz")
+
+    def test_the_declared_anchor_wins_over_the_folder_it_came_from(self):
+        """AREG's oriented mode registers against a copy IT made.
+
+        That copy arrives in the RESULTS, not in the acquisition, so picking
+        the anchor by source would land on the scan the caller sent -- wrong
+        by exactly the rotation ASO applied, and rendering without an error.
+        """
+        folder = os.path.join(self.root, "produced")
+        os.makedirs(folder, exist_ok=True)
+        for name in ("P1_T1_Or.nii.gz", "P1_Reg.nii.gz"):
+            open(os.path.join(folder, name), "w").close()
+        os.makedirs(os.path.join(self.root, "sent"), exist_ok=True)
+        open(os.path.join(self.root, "sent", "P1_T1.nii.gz"), "w").close()
+        with open(os.path.join(folder, "Tool_report.json"), "w",
+                  encoding="utf-8") as handle:
+            json.dump({"cases": {"P1": {
+                "produced": ["P1_Reg.nii.gz", "P1_T1_Or.nii.gz"],
+                "inputs": {"t1": "P1_T1.nii.gz"},
+                "registered_onto": "P1_T1_Or.nii.gz"}}}, handle)
+
+        cases = index.build([("Scans", os.path.join(self.root, "sent")),
+                             ("Results", folder)])
+        views = cases[0].views(acquisition="Scans", registered=True)
+
+        self.assertEqual(len(views), 1)
+        self.assertEqual(views[0].anchor.name, "P1_T1_Or.nii.gz",
+                         "the oriented copy, not the scan the caller sent")
+        self.assertEqual(views[0].compare.name, "P1_Reg.nii.gz")
+
+    def test_with_no_declaration_the_acquisition_still_anchors(self):
+        """The ordinary modes, where the fixed scan IS what the caller sent."""
+        cases = index.build(self._folders(["P1_T1.nii.gz"], ["P1_Reg.nii.gz"]))
+
+        views = cases[0].views(acquisition="Scans", registered=True)
+
+        self.assertEqual(views[0].anchor.name, "P1_T1.nii.gz")

@@ -378,11 +378,18 @@ BASIS_REGISTERED = "registered onto this scan"
 class Case:
     """Everything one patient has, across every folder that was indexed."""
 
-    __slots__ = ("key", "artifacts")
+    __slots__ = ("key", "artifacts", "registered_onto")
 
     def __init__(self, key: str):
         self.key = key
         self.artifacts = []
+        # The file name a run said its result is in the frame OF, or "". The
+        # scan to anchor a comparison on, and the run is the only thing that
+        # can say which: in AREG's oriented mode the registration was done
+        # against a copy IT made, not against the scan the caller sent, and
+        # anchoring on the sent one would be wrong by the orientation -- the
+        # rotation error this module's `View` exists to refuse.
+        self.registered_onto = ""
 
     @property
     def patient(self) -> str:
@@ -418,8 +425,22 @@ class Case:
         too, because the two are in one frame and that is the premise.
         """
         volumes = [artifact for artifact in self.of_kind(VOLUME)]
-        sent = [artifact for artifact in volumes if artifact.source == acquisition]
-        produced = [artifact for artifact in volumes if artifact.source != acquisition]
+        # The DECLARED anchor wins over the source it came from. AREG's
+        # oriented mode registers against a copy it made for itself, which
+        # arrives in the results and not in the acquisition -- so picking by
+        # source would anchor on the scan the caller sent and be wrong by the
+        # orientation, silently and by exactly the rotation ASO applied.
+        named = [artifact for artifact in volumes
+                 if self.registered_onto and artifact.name == self.registered_onto]
+        sent = named or [artifact for artifact in volumes
+                         if artifact.source == acquisition]
+        # The RESULT: neither the anchor nor anything the caller sent. "Not the
+        # anchor" alone is not enough -- the oriented mode has three volumes
+        # for one case, the scan sent, the copy the run oriented and the
+        # registered follow-up, and excluding one of three leaves a choice
+        # made by list order.
+        produced = [artifact for artifact in volumes
+                    if artifact not in sent and artifact.source != acquisition]
         if not sent or not produced:
             return None
         overlays = [artifact for artifact in self.of_kind(*OVERLAY_KINDS)
@@ -548,6 +569,7 @@ def _stated_cases(root: str) -> dict:
     vocabulary -- and the caller then keys by name exactly as before.
     """
     stated = {}
+    anchors = {}
     for filename in sorted(os.listdir(root)) if os.path.isdir(root) else ():
         if not _is_report(filename):
             continue
@@ -558,6 +580,11 @@ def _stated_cases(root: str) -> dict:
             continue
         cases = document.get("cases")
         if not isinstance(cases, dict):
+            # AMASSS writes `cases` as a LIST, keyed on an anonymous `p_000`,
+            # naming absolute paths into a job directory that is gone by the
+            # time anybody reads them. Nothing here can use that, and reading
+            # it as if it were the mapping the contract states would key every
+            # mask to the wrong patient.
             continue
         for case, entry in cases.items():
             if not isinstance(case, str) or not isinstance(entry, dict):
@@ -572,7 +599,13 @@ def _stated_cases(root: str) -> dict:
                     continue
                 stated.setdefault(path.replace("\\", "/"), case)
                 stated.setdefault(os.path.basename(path), case)
-    return stated
+            onto = entry.get("registered_onto")
+            if isinstance(onto, str) and onto:
+                # Kept apart from the paths above, which map a FILE to a case.
+                # This maps a case to one of its files, and one dict for both
+                # would collide on a name that is each.
+                anchors.setdefault(case, os.path.basename(onto))
+    return stated, anchors
 
 
 def build(sources, drop_timepoint: bool = False) -> list:
@@ -591,10 +624,14 @@ def build(sources, drop_timepoint: bool = False) -> list:
     # both. Merged, a report in any source speaks for all of them, which is
     # what one run over several folders actually is.
     stated = {}
+    anchors = {}
     for _label, root in sources:
         if root and os.path.isdir(root):
-            for path, case in _stated_cases(root).items():
+            said, said_anchors = _stated_cases(root)
+            for path, case in said.items():
                 stated.setdefault(path, case)
+            for case, name in said_anchors.items():
+                anchors.setdefault(case, name)
     for label, root in sources:
         if not root or not os.path.isdir(root):
             continue
@@ -617,6 +654,7 @@ def build(sources, drop_timepoint: bool = False) -> list:
                                        drop_timepoint=drop_timepoint)
                 key = os.path.join(parent, patient) if parent else patient
                 case = cases.setdefault(key, Case(key))
+                case.registered_onto = anchors.get(key, case.registered_onto)
                 case.artifacts.append(
                     Artifact(directory, VOLUME, label, parent, patient,
                              origin=os.path.dirname(raw))
@@ -646,6 +684,7 @@ def build(sources, drop_timepoint: bool = False) -> list:
                     )
                     key = os.path.join(relative, patient) if relative else patient
                 case = cases.setdefault(key, Case(key))
+                case.registered_onto = anchors.get(key, case.registered_onto)
                 case.artifacts.append(
                     Artifact(full, kind, label, relative, patient, origin=raw)
                 )
