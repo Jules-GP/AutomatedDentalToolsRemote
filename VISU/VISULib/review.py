@@ -1,4 +1,4 @@
-"""Which patients a reader marked as needing work, and where that is kept.
+"""Which patients a reader asked to have done again, and where that is kept.
 
 The one thing a reviewer produces that is not a corrected file: a list. Six
 cases look fine, two do not, and what happens next -- re-running those two,
@@ -22,7 +22,16 @@ FILENAME = "visu-review.json"
 # The shape written. A version, because the next thing this file wants to
 # carry is a note per patient, and a reader that predates that must not
 # choke on it.
-VERSION = 1
+VERSION = 2
+
+# What the list is called on disk. It was `flagged` through version 1, and a
+# file written then is still read: the word changed, the meaning never did.
+# "Flag" said that something had been noticed and not what would happen to it,
+# while every layer underneath -- `REPLAY_DIRNAME`, `narrow_to_cases`,
+# "Replaying %s over %d of its cases" -- already called it a replay. One word
+# across the whole stack, and it is the one that names the consequence.
+MARKED = "replay"
+_MARKED_V1 = "flagged"
 
 
 def path_for(folder: str) -> str:
@@ -30,7 +39,12 @@ def path_for(folder: str) -> str:
 
 
 def load(folder: str) -> set:
-    """The flagged case keys, or an empty set for a folder with no marks."""
+    """The case keys marked for a replay, or an empty set for a fresh folder.
+
+    Reads the version-1 spelling too. A clinician who marked eight patients
+    yesterday opens the same folder today, and losing that list to a rename
+    would be the rename's fault, not theirs.
+    """
     try:
         with open(path_for(folder), encoding="utf-8") as handle:
             document = json.load(handle)
@@ -39,11 +53,13 @@ def load(folder: str) -> set:
         # something else wrote. None of the three is an error here: the
         # reader starts with nothing marked.
         return set()
-    flagged = document.get("flagged")
-    return {str(key) for key in flagged} if isinstance(flagged, list) else set()
+    marked = document.get(MARKED)
+    if not isinstance(marked, list):
+        marked = document.get(_MARKED_V1)
+    return {str(key) for key in marked} if isinstance(marked, list) else set()
 
 
-def save(folder: str, flagged) -> bool:
+def save(folder: str, marked) -> bool:
     """Write the marks beside the data. False when the folder will not take it.
 
     Not raising: a hosted sample is unpacked into a temporary directory that
@@ -51,7 +67,7 @@ def save(folder: str, flagged) -> bool:
     perfectly normal. Losing the marks is worth a line in the panel, never a
     dialog over a scan.
     """
-    document = {"version": VERSION, "flagged": sorted(flagged)}
+    document = {"version": VERSION, MARKED: sorted(marked)}
     staging = path_for(folder) + ".visu-tmp"
     try:
         with open(staging, "w", encoding="utf-8") as handle:
@@ -66,12 +82,12 @@ def save(folder: str, flagged) -> bool:
     return True
 
 
-def as_text(flagged, folder: str = "") -> str:
+def as_text(marked, folder: str = "") -> str:
     """The list as something to paste into a message or a ticket."""
-    marked = sorted(flagged)
+    marked = sorted(marked)
     if not marked:
-        return "Nothing flagged."
-    head = f"{len(marked)} flagged"
+        return "Nothing marked to replay."
+    head = f"{len(marked)} to replay"
     if folder:
         head += f" in {folder}"
     return "\n".join([head + ":"] + [f"  {key}" for key in marked])

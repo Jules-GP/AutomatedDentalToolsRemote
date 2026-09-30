@@ -576,12 +576,12 @@ class VISUWidget(ScriptedLoadableModuleWidget):
         self._syncing = False
         # The case keys this reader has marked as needing work, and the
         # folder they belong to. Read back off the folder on every open.
-        self._flagged = set()
+        self._toReplay = set()
         self._folder = ""
         # The case keys whose files this panel actually wrote back. Not the
-        # same list as the flagged one and not derivable from it: a reader
-        # corrects a landmark without flagging the patient, and flags a
-        # patient they could not correct at all.
+        # same list as the replay one and not derivable from it: a reader
+        # corrects a landmark without asking for a replay, and asks for one on
+        # a patient they could not correct at all.
         self._written = set()
         # `{file: {label: RAS position}}` as each landmark file was FIRST
         # read this session -- what the tool produced, before this reader
@@ -594,7 +594,7 @@ class VISUWidget(ScriptedLoadableModuleWidget):
         # for a reader who opened it themselves -- who has nothing to
         # continue, and must not be shown a button that says they have.
         self._continue = None
-        # Where a flagged patient goes BACK to, when the caller offered
+        # Where a patient marked for replay goes BACK to, when the caller offered
         # somewhere. None is the ordinary case: a reader who opened VISU
         # on a folder has no run behind them.
         self._rewind = None
@@ -744,12 +744,12 @@ class VISUWidget(ScriptedLoadableModuleWidget):
 
         row = qt.QHBoxLayout()
         row.setSpacing(design.SPACING_SM)
-        self.nextFlaggedButton = design.secondary_button(_("Go to next flagged"))
-        self.nextFlaggedButton.connect("clicked()", self.onNextFlagged)
-        row.addWidget(self.nextFlaggedButton, 1)
-        self.clearFlagsButton = design.secondary_button(_("Clear all flags"))
-        self.clearFlagsButton.connect("clicked()", self.onClearFlags)
-        row.addWidget(self.clearFlagsButton, 1)
+        self.nextToReplayButton = design.secondary_button(_("Go to next case to replay"))
+        self.nextToReplayButton.connect("clicked()", self.onNextToReplay)
+        row.addWidget(self.nextToReplayButton, 1)
+        self.clearReplayButton = design.secondary_button(_("Clear the replay list"))
+        self.clearReplayButton.connect("clicked()", self.onClearReplayList)
+        row.addWidget(self.clearReplayButton, 1)
         column.addLayout(row)
 
     def _buildModify(self) -> None:
@@ -840,14 +840,14 @@ class VISUWidget(ScriptedLoadableModuleWidget):
         # before, which was a weaker thing than it looked: a reader who can
         # see a bad result and cannot ask for it to be redone is being asked
         # to keep a list somebody else will act on.
-        self.flagButton = design.toggle_button(_("Flag"))
-        self.flagButton.toolTip = _(
+        self.replayToggle = design.toggle_button(_("Replay this case"))
+        self.replayToggle.toolTip = _(
             "Mark this patient to be done again from an earlier step. The "
             "list is written beside the data, so it is still there tomorrow "
             "and for whoever opens the folder next."
         )
-        self.flagButton.connect("clicked()", self.onFlagToggled)
-        actions.addWidget(self.flagButton, 1)
+        self.replayToggle.connect("clicked()", self.onReplayToggled)
+        actions.addWidget(self.replayToggle, 1)
 
         self.saveButton = design.primary_button(_("Save"))
         self.saveButton.toolTip = _(
@@ -912,7 +912,7 @@ class VISUWidget(ScriptedLoadableModuleWidget):
         self.cases = self._ticked()
         self.position = 0
         self._folder = folder
-        self._flagged = review.load(folder) if folder else set()
+        self._toReplay = review.load(folder) if folder else set()
         self._syncHandBack()
         self._describeReview()
 
@@ -1087,28 +1087,30 @@ class VISUWidget(ScriptedLoadableModuleWidget):
         has said those three need an earlier step again, so the one button
         they have left follows what they said rather than asking them again.
         """
-        return bool(self._rewind and self._flagged)
+        return bool(self._rewind and self._toReplay)
 
     def _syncHandBack(self) -> None:
-        """The flag's wording, and what the one button below says it will do.
+        """The toggle's wording, and what the buttons below say they will do.
 
-        The flag's words are the local module's, unchanged: a reader who used
-        it reads the same sentence here, and "mark this one" never said what
-        marking would DO. The button then says the rest of that sentence.
+        "Flag" said that something had been NOTICED and not what would happen
+        to it, while every layer underneath -- `REPLAY_DIRNAME`,
+        `narrow_to_cases`, "Replaying %s over %d of its cases" -- already
+        called it a replay. The toggle now names the consequence, so the
+        button below no longer has to finish its sentence.
         """
         somewhere = bool(self._rewind)
-        if somewhere and self.flagButton.isChecked():
-            self.flagButton.setText(_("Cancel - this patient is fine"))
+        if somewhere and self.replayToggle.isChecked():
+            self.replayToggle.setText(_("Keep this result"))
         elif somewhere:
-            self.flagButton.setText(_("Go back and edit this patient"))
+            self.replayToggle.setText(_("Replay this case"))
         else:
-            self.flagButton.setText(_("Flag"))
+            self.replayToggle.setText(_("Replay this case"))
 
         if self._goingBack():
             self.continueButton.setText(
                 _("Go back to {step} for {count} patient(s)").format(
                     step=self._rewind.get("tool") or _("the previous step"),
-                    count=len(self._flagged)))
+                    count=len(self._toReplay)))
             self.continueButton.toolTip = _(
                 "Write what you corrected, then take the marked patients "
                 "back to that step so they can be done again from there. "
@@ -1122,17 +1124,17 @@ class VISUWidget(ScriptedLoadableModuleWidget):
                 "where it stopped."
             )
 
-    def onFlagToggled(self) -> None:
+    def onReplayToggled(self) -> None:
         if not self.cases:
-            self.flagButton.setChecked(False)
+            self.replayToggle.setChecked(False)
             return
         key = self.cases[self.position].key
-        if self.flagButton.isChecked():
-            self._flagged.add(key)
+        if self.replayToggle.isChecked():
+            self._toReplay.add(key)
         else:
-            self._flagged.discard(key)
+            self._toReplay.discard(key)
         self._syncHandBack()
-        if self._folder and not review.save(self._folder, self._flagged):
+        if self._folder and not review.save(self._folder, self._toReplay):
             # Said once, where the list is, rather than in a dialog over a
             # scan. A hosted sample is unpacked into a temporary folder the
             # next download deletes; a share can be read-only.
@@ -1143,13 +1145,13 @@ class VISUWidget(ScriptedLoadableModuleWidget):
         self._describeReview()
         self._describePosition()
 
-    def onNextFlagged(self) -> None:
+    def onNextToReplay(self) -> None:
         """Step to the next marked patient, wrapping once."""
-        if not self._flagged or not self.cases:
+        if not self._toReplay or not self.cases:
             return
         keys = [case.key for case in self.cases]
         order = keys[self.position + 1:] + keys[:self.position + 1]
-        following = next((key for key in order if key in self._flagged), None)
+        following = next((key for key in order if key in self._toReplay), None)
         if following is None:
             return
         self._leaving()
@@ -1157,11 +1159,11 @@ class VISUWidget(ScriptedLoadableModuleWidget):
         self.position = keys.index(following)
         self._refresh()
 
-    def onClearFlags(self) -> None:
-        self._flagged = set()
+    def onClearReplayList(self) -> None:
+        self._toReplay = set()
         if self._folder:
-            review.save(self._folder, self._flagged)
-        self._readFlag()
+            review.save(self._folder, self._toReplay)
+        self._readReplayToggle()
         self._syncHandBack()
         self._describeReview()
         self._describePosition()
@@ -1178,22 +1180,22 @@ class VISUWidget(ScriptedLoadableModuleWidget):
         case = self.cases[self.position]
         self.positionLabel.text = _("{at} of {total} - {patient}{mark}").format(
             at=self.position + 1, total=len(self.cases), patient=case.label,
-            mark=_("   FLAGGED") if case.key in self._flagged else "",
+            mark=_("   TO REPLAY") if case.key in self._toReplay else "",
         )
 
-    def _readFlag(self) -> None:
+    def _readReplayToggle(self) -> None:
         """Put the button where this patient's mark is, without re-saving."""
-        marked = bool(self.cases) and self.cases[self.position].key in self._flagged
-        if self.flagButton.isChecked() != marked:
-            self.flagButton.setChecked(marked)
+        marked = bool(self.cases) and self.cases[self.position].key in self._toReplay
+        if self.replayToggle.isChecked() != marked:
+            self.replayToggle.setChecked(marked)
 
     def _describeReview(self) -> None:
         self.reviewLabel.text = (
-            review.as_text(self._flagged) if self._flagged
-            else _("Nothing flagged in this folder.")
+            review.as_text(self._toReplay) if self._toReplay
+            else _("Nothing marked to replay in this folder.")
         )
-        self.nextFlaggedButton.enabled = bool(self._flagged)
-        self.clearFlagsButton.enabled = bool(self._flagged)
+        self.nextToReplayButton.enabled = bool(self._toReplay)
+        self.clearReplayButton.enabled = bool(self._toReplay)
 
     def unlocked(self) -> set:
         """What the reader has said may move."""
@@ -1339,13 +1341,13 @@ class VISUWidget(ScriptedLoadableModuleWidget):
         has = bool(self.cases)
         self.previousButton.enabled = has and self.position > 0
         self.nextButton.enabled = has and self.position < len(self.cases) - 1
-        self._readFlag()
-        marked = bool(self.cases) and self.cases[self.position].key in self._flagged
+        self._readReplayToggle()
+        marked = bool(self.cases) and self.cases[self.position].key in self._toReplay
         self.positionLabel.text = (
             _("{at} of {total} - {patient}{mark}").format(
                 at=self.position + 1, total=len(self.cases),
                 patient=self.cases[self.position].label,
-                mark=_("   FLAGGED") if marked else "",
+                mark=_("   TO REPLAY") if marked else "",
             ) if has else ""
         )
         if not has:
@@ -1669,11 +1671,11 @@ class VISUWidget(ScriptedLoadableModuleWidget):
         who opened VISU themselves passes none and sees none, because they
         have nothing to hand back to.
 
-        `rewind` is the step a reader may send flagged patients BACK to, as
+        `rewind` is the step a reader may send the marked patients BACK to, as
         `{"slot", "tool", "kind"}`, or None when there is nowhere to go --
         which is the ordinary case and is why it defaults to none. VISU still
         learns nothing about runs: it is handed a NAME to show and hands the
-        flags back, and what that name means is the caller's.
+        marks back, and what that name means is the caller's.
         """
         self._continue = on_continue
         self._rewind = rewind
@@ -1705,19 +1707,20 @@ class VISUWidget(ScriptedLoadableModuleWidget):
 
         * `folder`, because the reader can repoint the picker, so what was
           reviewed is not necessarily what the caller opened;
-        * `flagged`, the reader's verdict, which exists nowhere else;
+        * `replay`, the reader's verdict -- the cases they asked to have
+          done again -- which exists nowhere else;
         * `written`, the patients whose files this panel actually changed.
           Without it a caller must send a whole cohort back -- hundreds of
           megabytes -- on behalf of a reader who corrected nothing.
 
-        `rewind_to` is the step the reader asked the FLAGGED patients to be
+        `rewind_to` is the step the reader asked the MARKED patients to be
         taken back to, or None for an ordinary Continue. It is the caller's
         own name for that step, handed straight back: VISU is told a name and
         repeats it, which is what keeps it ignorant of runs.
         """
         return {
             "folder": self._folder,
-            "flagged": set(self._flagged),
+            "replay": set(self._toReplay),
             "written": set(self._written),
             "rewind_to": rewind_to,
         }
@@ -1734,7 +1737,7 @@ class VISUWidget(ScriptedLoadableModuleWidget):
         # well come back through this panel, and a second Continue would
         # resume one run twice.
         handler, self._continue = self._continue, None
-        # Read BEFORE the button is hidden and while the flags are still
+        # Read BEFORE the button is hidden and while the marks are still
         # standing: this is the one place the two destinations part company.
         backwards = self._rewind.get("slot") if self._goingBack() else None
         self.continueButton.setVisible(False)

@@ -35,7 +35,7 @@ class ReviewTest(unittest.TestCase):
     def test_it_is_written_sorted_so_two_sessions_do_not_churn_the_file(self):
         review.save(self.root, {"c", "a", "b"})
         with open(review.path_for(self.root), encoding="utf-8") as handle:
-            self.assertEqual(json.load(handle)["flagged"], ["a", "b", "c"])
+            self.assertEqual(json.load(handle)[review.MARKED], ["a", "b", "c"])
 
     def test_a_folder_that_will_not_take_it_says_so_rather_than_raising(self):
         # A hosted sample lands in a temp directory that the next download
@@ -64,9 +64,27 @@ class ReviewTest(unittest.TestCase):
         self.assertEqual(review.load(self.root), set())
 
     def test_the_text_is_something_to_paste_into_a_ticket(self):
-        self.assertEqual(review.as_text(set()), "Nothing flagged.")
+        self.assertEqual(review.as_text(set()), "Nothing marked to replay.")
         self.assertEqual(review.as_text({"p2", "p1"}, "/data/cohort"),
-                         "2 flagged in /data/cohort:\n  p1\n  p2")
+                         "2 to replay in /data/cohort:\n  p1\n  p2")
+
+    def test_a_list_written_before_the_rename_is_still_read(self):
+        """The word changed and the meaning did not. A clinician who marked
+        eight patients yesterday opens the same folder today, and losing that
+        list to a rename would be the rename's fault, not theirs."""
+        folder = tempfile.mkdtemp()
+        with open(review.path_for(folder), "w", encoding="utf-8") as handle:
+            json.dump({"version": 1, "flagged": ["p1", "p2"]}, handle)
+
+        self.assertEqual(review.load(folder), {"p1", "p2"})
+
+    def test_the_new_spelling_wins_when_a_file_somehow_carries_both(self):
+        """Only a hand-edited file can, and `replay` is what this writes."""
+        folder = tempfile.mkdtemp()
+        with open(review.path_for(folder), "w", encoding="utf-8") as handle:
+            json.dump({"version": 2, "replay": ["new"], "flagged": ["old"]}, handle)
+
+        self.assertEqual(review.load(folder), {"new"})
 
 
 if __name__ == "__main__":

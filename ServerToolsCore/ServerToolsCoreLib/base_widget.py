@@ -2422,7 +2422,7 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
                       origin=None) -> bool:
         """Hand `folder` to the review module. False when it could not be.
 
-        `rewind` is where flagged patients may be sent BACK to, or None. The
+        `rewind` is where the marked patients may be sent BACK to, or None. The
         reviewer decides what to offer from it; this side only knows which
         step it was.
 

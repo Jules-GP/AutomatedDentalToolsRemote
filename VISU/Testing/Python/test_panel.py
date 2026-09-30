@@ -840,34 +840,34 @@ class PanelTest(unittest.TestCase):
     def test_flagging_a_patient_writes_the_list_beside_the_data(self):
         # The one thing a reviewer produces that is not a corrected file.
         self.open([f"scans/p{n}_scan.nii.gz" for n in range(1, 4)])
-        self.widget.flagButton.setChecked(True)
-        self.widget.onFlagToggled()
+        self.widget.replayToggle.setChecked(True)
+        self.widget.onReplayToggled()
         self.assertIn("p1", self.widget.reviewLabel.text)
         self.assertEqual(
             VISU.review.load(os.path.join(self.root.name, "scans")), {"p1"})
 
     def test_the_mark_follows_the_patient_and_shows_in_the_position_line(self):
         self.open([f"scans/p{n}_scan.nii.gz" for n in range(1, 4)])
-        self.widget.flagButton.setChecked(True)
-        self.widget.onFlagToggled()
-        self.assertIn("FLAGGED", self.widget.positionLabel.text)
+        self.widget.replayToggle.setChecked(True)
+        self.widget.onReplayToggled()
+        self.assertIn("TO REPLAY", self.widget.positionLabel.text)
 
         self.widget.onNext()
-        self.assertFalse(self.widget.flagButton.isChecked(), "the mark followed")
-        self.assertNotIn("FLAGGED", self.widget.positionLabel.text)
+        self.assertFalse(self.widget.replayToggle.isChecked(), "the mark followed")
+        self.assertNotIn("TO REPLAY", self.widget.positionLabel.text)
 
         self.widget.onPrevious()
-        self.assertTrue(self.widget.flagButton.isChecked())
+        self.assertTrue(self.widget.replayToggle.isChecked())
 
     def test_the_marks_are_read_back_when_the_folder_is_opened_again(self):
         self.open([f"scans/p{n}_scan.nii.gz" for n in range(1, 4)])
-        self.widget.flagButton.setChecked(True)
-        self.widget.onFlagToggled()
+        self.widget.replayToggle.setChecked(True)
+        self.widget.onReplayToggled()
 
         second = VISU.VISUWidget()
         second.setup()
         second.folderInput.setCurrentPath(os.path.join(self.root.name, "scans"))
-        self.assertEqual(second._flagged, {"p1"})
+        self.assertEqual(second._toReplay, {"p1"})
         self.assertIn("p1", second.reviewLabel.text)
 
     def test_go_to_next_flagged_skips_what_is_fine(self):
@@ -875,30 +875,30 @@ class PanelTest(unittest.TestCase):
         for position in (0, 2):
             self.widget.position = position
             self.widget._refresh()
-            self.widget.flagButton.setChecked(True)
-            self.widget.onFlagToggled()
+            self.widget.replayToggle.setChecked(True)
+            self.widget.onReplayToggled()
 
         self.widget.position = 0
         self.widget._refresh()
-        self.widget.onNextFlagged()
+        self.widget.onNextToReplay()
         self.assertEqual(self.widget.position, 2)
-        self.widget.onNextFlagged()
+        self.widget.onNextToReplay()
         self.assertEqual(self.widget.position, 0, "it did not wrap")
 
     def test_clearing_puts_the_button_down_too(self):
         self.open(["scans/p1_scan.nii.gz"])
-        self.widget.flagButton.setChecked(True)
-        self.widget.onFlagToggled()
-        self.widget.onClearFlags()
-        self.assertFalse(self.widget.flagButton.isChecked())
-        self.assertEqual(self.widget._flagged, set())
-        self.assertIn("Nothing flagged", self.widget.reviewLabel.text)
+        self.widget.replayToggle.setChecked(True)
+        self.widget.onReplayToggled()
+        self.widget.onClearReplayList()
+        self.assertFalse(self.widget.replayToggle.isChecked())
+        self.assertEqual(self.widget._toReplay, set())
+        self.assertIn("Nothing marked to replay", self.widget.reviewLabel.text)
 
     def test_a_folder_that_will_not_take_the_list_says_so(self):
         self.open(["scans/p1_scan.nii.gz"])
         self.widget._folder = os.path.join(self.root.name, "not-there")
-        self.widget.flagButton.setChecked(True)
-        self.widget.onFlagToggled()
+        self.widget.replayToggle.setChecked(True)
+        self.widget.onReplayToggled()
         self.assertIn("this session only", self.widget.reviewLabel.text)
 
     def test_leaving_the_module_leaves_the_scene_alone(self):
@@ -1202,13 +1202,13 @@ class HandingBackTest(unittest.TestCase):
     def test_continue_reports_what_the_reader_flagged(self):
         folder = self.folder([f"results/p{n}_scan.nii.gz" for n in (1, 2)])
         self.widget.openForReview(folder, self.handed.append)
-        self.widget.flagButton.setChecked(True)
-        self.widget.onFlagToggled()
+        self.widget.replayToggle.setChecked(True)
+        self.widget.onReplayToggled()
 
         self.widget.onContinue()
 
         self.assertEqual(len(self.handed), 1)
-        self.assertEqual(self.handed[0]["flagged"], {"p1"})
+        self.assertEqual(self.handed[0]["replay"], {"p1"})
         self.assertEqual(self.handed[0]["folder"], folder)
 
     # -- one button, two destinations --------------------------------------
@@ -1229,8 +1229,8 @@ class HandingBackTest(unittest.TestCase):
         self.widget.openForReview(
             self.folder([f"results/p{n}_scan.nii.gz" for n in (1, 2)]),
             self.handed.append, rewind=self.BACK)
-        self.widget.flagButton.setChecked(True)
-        self.widget.onFlagToggled()
+        self.widget.replayToggle.setChecked(True)
+        self.widget.onReplayToggled()
         self.assertEqual(self.widget.continueButton.text,
                          "Go back to ALI_CBCT for 1 patient(s)")
 
@@ -1238,13 +1238,13 @@ class HandingBackTest(unittest.TestCase):
         self.widget.openForReview(
             self.folder([f"results/p{n}_scan.nii.gz" for n in (1, 2)]),
             self.handed.append, rewind=self.BACK)
-        self.widget.flagButton.setChecked(True)
-        self.widget.onFlagToggled()
+        self.widget.replayToggle.setChecked(True)
+        self.widget.onReplayToggled()
 
         self.widget.onContinue()
 
         self.assertEqual(self.handed[0]["rewind_to"], "01_ALI_CBCT")
-        self.assertEqual(self.handed[0]["flagged"], {"p1"})
+        self.assertEqual(self.handed[0]["replay"], {"p1"})
 
     def test_with_nothing_marked_it_hands_back_no_step_at_all(self):
         # The same button, the same press: what parts company is the mark.
@@ -1260,22 +1260,22 @@ class HandingBackTest(unittest.TestCase):
         # no offer.
         self.widget.openForReview(
             self.folder(["results/p1_scan.nii.gz"]), self.handed.append)
-        self.widget.flagButton.setChecked(True)
-        self.widget.onFlagToggled()
+        self.widget.replayToggle.setChecked(True)
+        self.widget.onReplayToggled()
         self.assertEqual(self.widget.continueButton.text, "Continue")
 
         self.widget.onContinue()
         self.assertIsNone(self.handed[0]["rewind_to"])
-        self.assertEqual(self.handed[0]["flagged"], {"p1"},
+        self.assertEqual(self.handed[0]["replay"], {"p1"},
                          "the mark still travels, it just changes nothing here")
 
     def test_clearing_the_marks_turns_it_back_into_continue(self):
         self.widget.openForReview(
             self.folder(["results/p1_scan.nii.gz"]),
             self.handed.append, rewind=self.BACK)
-        self.widget.flagButton.setChecked(True)
-        self.widget.onFlagToggled()
-        self.widget.onClearFlags()
+        self.widget.replayToggle.setChecked(True)
+        self.widget.onReplayToggled()
+        self.widget.onClearReplayList()
         self.assertEqual(self.widget.continueButton.text, "Continue")
 
     def test_a_folder_that_already_holds_marks_opens_on_the_way_back(self):
