@@ -500,3 +500,81 @@ class RegisteredComparisonTest(unittest.TestCase):
         views = cases[0].views(acquisition="Scans", registered=True)
 
         self.assertEqual(views[0].anchor.name, "P1_T1.nii.gz")
+
+    def test_a_declared_anchor_that_is_not_there_falls_back(self):
+        """A manifest naming a file the archive does not hold -- a partial
+        download, a step whose output was cleaned. The comparison falls back
+        to the acquisition rather than the case vanishing."""
+        cases = index.build(self._folders(["P1_T1.nii.gz"], ["P1_Reg.nii.gz"]))
+        cases[0].registered_onto = "a_file_nobody_has.nii.gz"
+
+        views = cases[0].views(acquisition="Scans", registered=True)
+
+        self.assertEqual(views[0].anchor.name, "P1_T1.nii.gz")
+        self.assertEqual(views[0].compare.name, "P1_Reg.nii.gz")
+
+    def test_a_declared_anchor_naming_a_transform_is_not_an_anchor(self):
+        """Only volumes are considered: a `.tfm` has no geometry to draw on,
+        and anchoring on it would be an empty picture."""
+        cases = index.build(
+            self._folders(["P1_T1.nii.gz"], ["P1_Reg.nii.gz", "P1_Reg.tfm"]))
+        cases[0].registered_onto = "P1_Reg.tfm"
+
+        views = cases[0].views(acquisition="Scans", registered=True)
+
+        self.assertEqual(views[0].anchor.name, "P1_T1.nii.gz")
+
+    def test_a_report_that_is_not_json_is_ignored(self):
+        """A truncated write. The names still key by the old rule."""
+        folders = self._folders(["P1_T1.nii.gz"], ["P1_Reg.nii.gz"])
+        with open(os.path.join(self.root, "produced", "Tool_report.json"),
+                  "w", encoding="utf-8") as handle:
+            handle.write('{"cases": {"P1"')
+
+        cases = index.build(folders)
+
+        self.assertEqual(sorted(case.key for case in cases),
+                         ["P1_Reg", "P1_T1"])
+
+    def test_a_report_writing_cases_as_a_list_is_ignored(self):
+        """AMASSS's shape, keyed on an anonymous `p_000`. Read as the mapping
+        the contract states, every file would key to the wrong patient."""
+        folders = self._folders(["P1_T1.nii.gz"], ["P1_Reg.nii.gz"],
+                               manifest=False)
+        with open(os.path.join(self.root, "produced", "Tool_report.json"),
+                  "w", encoding="utf-8") as handle:
+            json.dump({"cases": [{"case_id": "p_000",
+                                  "produced": ["P1_Reg.nii.gz"]}]}, handle)
+
+        cases = index.build(folders)
+
+        self.assertNotIn("p_000", [case.key for case in cases])
+
+    def test_a_manifest_naming_files_nobody_has_invents_no_case(self):
+        """A report from a run whose outputs were cleaned. A case with no
+        artifact is a row in a picker that opens nothing."""
+        folders = self._folders(["P1_T1.nii.gz"], [], manifest=False)
+        with open(os.path.join(self.root, "produced", "Tool_report.json"),
+                  "w", encoding="utf-8") as handle:
+            json.dump({"cases": {"GHOST": {"produced": ["nothing.nii.gz"]}}},
+                      handle)
+
+        cases = index.build(folders)
+
+        self.assertNotIn("GHOST", [case.key for case in cases])
+
+    def test_a_case_id_that_is_a_path_does_not_become_one(self):
+        """A manifest is a tool's word and still not a path: an id with
+        separators in it must not silently key a case into a subfolder the
+        picker then groups by."""
+        folders = self._folders(["P1_T1.nii.gz"], ["P1_Reg.nii.gz"],
+                               manifest=False)
+        with open(os.path.join(self.root, "produced", "Tool_report.json"),
+                  "w", encoding="utf-8") as handle:
+            json.dump({"cases": {"../../escaped": {
+                "produced": ["P1_Reg.nii.gz"]}}}, handle)
+
+        cases = index.build(folders)
+        keys = [case.key for case in cases]
+
+        self.assertNotIn("../../escaped", keys)

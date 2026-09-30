@@ -1530,3 +1530,74 @@ class ComparisonChipsTest(HandingBackTest):
         self.assertEqual(
             self.widget.compareGroup.value(),
             {VISU.COMPARE_ACQUISITION: True, VISU.COMPARE_RESULT: True})
+
+
+class IdiotProofTest(HandingBackTest):
+    """What a reader can do to the panel that nobody designed for.
+
+    Double-presses, untick everything, a caller that hands over folders that
+    are not there. None of them may leave a run paused with no way out: the
+    server is keeping its work, and a panel that swallows the hand-back leaves
+    a GPU job waiting on a person who was never shown a button.
+    """
+
+    def test_pressing_replay_then_continue_hands_back_once(self):
+        """Either one starts an upload and may come back through this panel."""
+        self.widget.openForReview(
+            self.folder(["results/p1_scan.nii.gz"]),
+            self.handed.append, rewind=self.BACK)
+        self.widget.onReplay()
+        self.widget.onContinue()
+
+        self.assertEqual(len(self.handed), 1)
+
+    def test_replay_with_nothing_marked_still_hands_back(self):
+        """A reader who pressed the wrong button. It must not be a dead end --
+        the run is paused and only this panel can release it."""
+        self.widget.openForReview(
+            self.folder(["results/p1_scan.nii.gz"]),
+            self.handed.append, rewind=self.BACK)
+
+        self.widget.onReplay()
+
+        self.assertEqual(len(self.handed), 1)
+        self.assertEqual(self.handed[0]["replay"], set())
+
+    def test_replay_with_nowhere_to_go_back_to_hands_back_plainly(self):
+        """No rewind offered -- a chain whose earlier steps are look-only. The
+        button is not shown, and calling it anyway must not send a step name
+        the server would refuse."""
+        self.widget.openForReview(
+            self.folder(["results/p1_scan.nii.gz"]), self.handed.append)
+
+        self.widget.onReplay()
+
+        self.assertIsNone(self.handed[0]["rewind_to"])
+
+    def test_a_folder_beside_that_is_not_there_is_ignored(self):
+        """A clinician who moved their data between Apply and the pause."""
+        self.widget.openForReview(
+            self.folder(["results/p1_scan.nii.gz"]), self.handed.append,
+            beside=[("t1", "/a/path/nobody/has")], registered=True)
+
+        self.assertEqual(len(self.widget.cases), 1)
+
+    def test_a_beside_entry_with_no_path_is_dropped(self):
+        self.widget.openForReview(
+            self.folder(["results/p1_scan.nii.gz"]), self.handed.append,
+            beside=[("t1", ""), ("", "/tmp"), ("t2", None)])
+
+        self.assertEqual(self.widget._beside, [])
+
+    def test_unticking_both_halves_of_a_comparison_is_not_a_crash(self):
+        """It leaves no scan on screen, which is what was asked for -- the
+        same as unticking the CBCT chip today."""
+        self.widget.openForReview(
+            self.folder(["results/p1_scan.nii.gz"]), self.handed.append)
+        for label in VISU.COMPARABLE:
+            if label in self.widget.compareGroup.boxes:
+                self.widget.compareGroup.boxes[label].setChecked(False)
+
+        self.widget.onShowChanged()
+
+        self.assertTrue(True, "reached without raising")

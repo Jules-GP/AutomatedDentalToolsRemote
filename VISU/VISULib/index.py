@@ -541,6 +541,15 @@ def folders_in(cases) -> list:
     return found
 
 
+# A case id, as a tool is asked to write one: a name, never a path. Rejected
+# rather than sanitised, because a tool that writes `a/b` may mean two levels
+# and trimming it to `b` would key two cases together in silence.
+def _is_case_id(case: str) -> bool:
+    return bool(case) and not any(
+        separator in case for separator in ("/", "\\", os.sep)
+    ) and case not in (os.curdir, os.pardir)
+
+
 def _stated_cases(root: str) -> dict:
     """`{path or file name: case id}`, from a run report that says so.
 
@@ -588,6 +597,14 @@ def _stated_cases(root: str) -> dict:
             continue
         for case, entry in cases.items():
             if not isinstance(case, str) or not isinstance(entry, dict):
+                continue
+            if not _is_case_id(case):
+                # A case id is a NAME. One carrying separators becomes the
+                # case KEY verbatim, and `folder_of` reads the first level of
+                # a key as the cohort chip -- so `../../x` offers a chip
+                # called `..` and a case labelled `x`, and the picker is
+                # unusable. Skipped, which falls back to keying by file name:
+                # the same fail-safe as everywhere else here.
                 continue
             paths = list(entry.get("produced") or ())
             paths.extend(

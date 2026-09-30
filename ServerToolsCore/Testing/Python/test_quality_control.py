@@ -1154,3 +1154,36 @@ class TheVerdictTravelsTest(PanelTest):
         self.reviewer.press_continue()
 
         self.assertEqual(list(self._collectResume()["replay"]), [])
+
+
+class VerdictRobustnessTest(PanelTest):
+    """What a reader's verdict can be, and what must not reach the wire."""
+
+    def test_a_case_name_with_a_comma_survives_the_trip(self):
+        """Which is why this is one form field per case and not a joined
+        string: any separator picked is one that turns up in a folder name."""
+        self._stopped()
+        self.reviewer.press_continue(replay=("Doe, John", "P1"))
+
+        self.assertEqual(sorted(self._collectResume()["replay"]),
+                         ["Doe, John", "P1"])
+
+    def test_a_verdict_on_a_run_that_is_no_longer_stopped_is_dropped(self):
+        """It was cancelled, or the panel was torn down while the reader
+        worked. There is nothing left to carry on."""
+        run, _job = self._stopped()
+        run.paused = None
+
+        self.reviewer.press_continue(replay=("P1",))
+
+        self.assertEqual(self.client.resumed, [])
+
+    def test_the_verdict_survives_a_review_that_changed_no_file(self):
+        """The whole point: a bad registration is marked, not corrected -- the
+        landmarks that caused it are two steps back."""
+        self._stopped()
+        self.reviewer.press_continue(replay=("P1",), rewind_to="01_ALI_CBCT")
+
+        sent = self._collectResume()
+        self.assertEqual(sent["corrections"], {})
+        self.assertEqual(list(sent["replay"]), ["P1"])
