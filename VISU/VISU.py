@@ -145,6 +145,16 @@ SHOWABLE = (
 )
 _KIND_OF_OPTION = {label: kind for label, kind, _on in SHOWABLE}
 
+# The two scans of a comparison, named from the READER's side rather than the
+# pipeline's. "T1" and "T2" are what the tool's arguments are called and mean
+# nothing at a checkpoint: what is on screen is the scan they sent and the one
+# the run made from it. Both on, because the comparison IS the picture -- the
+# chips are there to take one away, which is how a reader checks whether a
+# shape belongs to the result or was in the acquisition all along.
+COMPARE_ACQUISITION = "Scan you sent"
+COMPARE_RESULT = "Registered result"
+COMPARABLE = (COMPARE_ACQUISITION, COMPARE_RESULT)
+
 # The scan's own placement, which is not a file kind: unlocking it is what
 # puts the anchor under a transform with handles.
 POSITION = "position"
@@ -387,10 +397,12 @@ class SceneLoader:
                 if reframe:
                     SceneLoader._layout("SlicerLayoutFourUpView")
                 SceneLoader._set_layers(anchor_node, label_node, fit=reframe)
+                rendered = []
                 if anchor_node is not None and anchor.kind == index.VOLUME:
                     # The same preset the CBCT panels use, with the shift
                     # `slicer_io` measured on a scan out of this pipeline.
-                    slicer_io.show_volume_rendering(anchor_node, VOLUME_RENDERING)
+                    rendered.append(slicer_io.show_volume_rendering(
+                        anchor_node, VOLUME_RENDERING))
                 if compare_node is not None:
                     # A SECOND rendering in the same 3D view: the registered
                     # result over the scan it was registered onto, which is the
@@ -399,8 +411,9 @@ class SceneLoader:
                     # VOLUME_RENDERING_COMPARE. Nothing here checks that they
                     # share a frame; `index.BASIS_REGISTERED` is what said so,
                     # on the tool's word.
-                    slicer_io.show_volume_rendering(
-                        compare_node, VOLUME_RENDERING_COMPARE)
+                    rendered.append(slicer_io.show_volume_rendering(
+                        compare_node, VOLUME_RENDERING_COMPARE))
+                SceneLoader._keep_rendered(rendered)
             if reframe:
                 SceneLoader._frame3D()
         except Exception as exc:  # noqa: BLE001 - a view is never worth a failure
@@ -435,6 +448,33 @@ class SceneLoader:
         if manager is None or node is None or not hasattr(node, name):
             return
         manager.setLayout(getattr(node, name))
+
+    @staticmethod
+    def _keep_rendered(displays) -> None:
+        """Switch every rendering back on, AFTER the last one was set up.
+
+        The reason is in `slicer_io._drive_module`: it selects the volume in
+        the volume-rendering MODULE, and "reaching the module instantiates its
+        widget, which reacts to the volume being selected and settles the
+        rendering's state". So preparing a second volume moves that selection
+        and settles the FIRST one's state behind it -- switched off, loaded,
+        correct, and invisible.
+
+        Measured on 2026-09-30: two volumes prepared, one rendered in 3D. The
+        symptom is indistinguishable from a comparison that was never paired,
+        which is why it cost a round of looking in the wrong place.
+
+        One pass at the end rather than a flag threaded through `slicer_io`:
+        that helper's job is to set ONE volume up correctly and it does, and
+        whoever wants two is the one who knows there are two.
+        """
+        for display in displays:
+            if display is None:
+                continue
+            try:
+                display.SetVisibility(True)
+            except Exception as exc:  # noqa: BLE001 - a view is never worth a failure
+                logger.warning("Could not keep a rendering on: %s", exc)
 
     @staticmethod
     def _frame3D() -> None:
@@ -768,6 +808,19 @@ class VISUWidget(ScriptedLoadableModuleWidget):
         formgen.connect_changed(self.showGroup, self.onShowChanged)
         outer.addWidget(design.section_title(_("Show")))
         outer.addWidget(self.showGroup.container)
+
+        # Shown only when a view actually holds two scans. A control that does
+        # nothing is worse than no control: a reader who unticks it and sees no
+        # change has been told the panel is broken.
+        self.compareGroup = formgen.MultiChoiceGroup(
+            {label: True for label in COMPARABLE}, layout="chips",
+        )
+        formgen.connect_changed(self.compareGroup, self.onShowChanged)
+        self.compareTitle = design.section_title(_("Compare"))
+        outer.addWidget(self.compareTitle)
+        outer.addWidget(self.compareGroup.container)
+        self.compareTitle.setVisible(False)
+        self.compareGroup.container.setVisible(False)
 
         self.contentsLabel = design.hint_label("")
         self.contentsLabel.setWordWrap(True)
@@ -1397,6 +1450,11 @@ class VISUWidget(ScriptedLoadableModuleWidget):
         anchor, anchor_node, label_node, compare_node = getattr(
             self, "_anchorLayers", (None, None, None, None))
         on = anchor is not None and anchor.kind in wanted
+        if compare_node is not None and not self.comparing(COMPARE_ACQUISITION):
+            # The reader took the acquisition away to look at the result alone.
+            # It stays LOADED -- a chip is a visibility switch, never a reason
+            # to read 150 MB off disk again -- and simply stops anchoring.
+            on = False
         self.scene.display(anchor if on else None,
                            anchor_node if on else None,
                            label_node if label_node is not None
@@ -1405,7 +1463,20 @@ class VISUWidget(ScriptedLoadableModuleWidget):
                            # Follows the volume chip: a reader who unticked
                            # scans wants neither of the two, not one of them.
                            compare_node=(compare_node
-                                         if index.VOLUME in wanted else None))
+                                         if index.VOLUME in wanted
+                                         and self.comparing(COMPARE_RESULT)
+                                         else None))
+
+    def comparing(self, label: str) -> bool:
+        """Whether that half of a comparison is ticked. True when there is none.
+
+        A view with one scan has no chips on screen, and every reader of this
+        is asking "may I show this" -- so the answer for a panel that is not
+        comparing anything has to be yes, or the ordinary case goes dark.
+        """
+        if not self.compareGroup.container.isVisible():
+            return True
+        return bool(self.compareGroup.value().get(label, True))
 
     def wanted_kinds(self) -> set:
         """The kinds the check boxes are letting through."""
@@ -1524,6 +1595,9 @@ class VISUWidget(ScriptedLoadableModuleWidget):
         # quietly re-lock what they unlocked.
         self._applyLock()
         self._anchorLayers = (anchor, anchor_node, label_node, compare_node)
+        comparing = compare_node is not None
+        self.compareTitle.setVisible(comparing)
+        self.compareGroup.container.setVisible(comparing)
         self._applyVisibility(reframe=reframe)
         if reframe and points:
             # The slices open on the volume's centre and the points are not

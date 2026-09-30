@@ -1498,3 +1498,35 @@ class FinishedResultsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ComparisonChipsTest(HandingBackTest):
+    """The two scans of a comparison, and the control that takes one away.
+
+    A reader checking a registration asks "is that shape the result, or was it
+    in the acquisition all along" -- and the only way to answer is to remove
+    one and look. Two chips, both on, because the comparison IS the picture.
+    """
+
+    def test_they_are_hidden_when_there_is_nothing_to_compare(self):
+        """A control that does nothing is worse than no control: a reader who
+        unticks it and sees no change has been told the panel is broken."""
+        self.widget.openForReview(
+            self.folder(["results/p1_scan.nii.gz"]), self.handed.append)
+
+        self.assertFalse(self.widget.compareGroup.container.isVisible())
+        self.assertFalse(self.widget.compareTitle.isVisible())
+
+    def test_with_no_comparison_both_halves_answer_yes(self):
+        """Every reader of `comparing` is asking "may I show this", so the
+        ordinary single-scan case has to answer yes or the view goes dark."""
+        self.widget.openForReview(
+            self.folder(["results/p1_scan.nii.gz"]), self.handed.append)
+
+        self.assertTrue(self.widget.comparing(VISU.COMPARE_ACQUISITION))
+        self.assertTrue(self.widget.comparing(VISU.COMPARE_RESULT))
+
+    def test_both_are_ticked_to_begin_with(self):
+        self.assertEqual(
+            self.widget.compareGroup.value(),
+            {VISU.COMPARE_ACQUISITION: True, VISU.COMPARE_RESULT: True})
