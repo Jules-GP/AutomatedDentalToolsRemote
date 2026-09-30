@@ -32,6 +32,7 @@ publishes a manifest naming its own outputs, which is the only source that can
 be right by construction rather than by guessing at names.
 """
 
+import json
 import os
 import re
 
@@ -330,12 +331,19 @@ class View:
 
     # `basis` is reassigned when a view gains overlays it did not start with,
     # so the two travel together and a caller cannot read one without the other.
-    __slots__ = ("anchor", "overlays", "basis")
+    #
+    # `compare` is a SECOND scan in this view's frame, or None. Kept apart from
+    # `overlays` because it is not one: an overlay is drawn ON the anchor --
+    # points, a mask, a surface -- while this is another greyscale volume the
+    # anchor is compared against, and a viewer puts it in a different place
+    # (the slice views' foreground layer, with a blend the reader controls).
+    __slots__ = ("anchor", "overlays", "basis", "compare")
 
-    def __init__(self, anchor, overlays, basis: str):
+    def __init__(self, anchor, overlays, basis: str, compare=None):
         self.anchor = anchor
         self.overlays = list(overlays)
         self.basis = basis
+        self.compare = compare
 
     @property
     def label(self) -> str:
@@ -353,6 +361,18 @@ class View:
 BASIS_COLOCATED = "written beside this scan"
 BASIS_ACQUISITION = "assumed: the acquisition"
 BASIS_NONE = "no scan found"
+# Two scans in ONE picture, which every other basis here exists to refuse.
+# See `View`: an oriented scan and the one it was made from are NOT the same
+# picture, and drawing either on the other is wrong by a rotation and renders
+# without an error -- the exact mistake a reviewer is at the screen to catch.
+#
+# A REGISTRATION is the one case where it is honest, and honest by
+# construction: the result was resampled into the target's frame, which is
+# what registering means. Nothing here can check that -- this module reads
+# names, not NIfTI headers -- so it is not inferred. The tool that wrote the
+# file declares it, as `review_kind = "registration"`, and the caller passes
+# it down. A caller that says nothing gets the old behaviour: two views.
+BASIS_REGISTERED = "registered onto this scan"
 
 
 class Case:
@@ -384,14 +404,46 @@ class Case:
     def of_kind(self, *kinds) -> list:
         return [artifact for artifact in self.artifacts if artifact.kind in kinds]
 
-    def views(self, acquisition: str = "") -> list:
+    def _registered_onto(self, acquisition: str):
+        """One view: the acquisition, with the registered result compared to it.
+
+        None unless this case really has both -- a scan from the acquisition
+        and a scan from somewhere else. A case the run produced nothing for,
+        or one whose only volume IS the acquisition, falls through to the
+        ordinary pictures rather than being shown an empty comparison.
+
+        Overlays follow the ANCHOR, as everywhere else in this class: what was
+        written beside the acquisition is drawn on it, and what the result
+        brought with it -- a mask, a transform's own outputs -- is drawn on it
+        too, because the two are in one frame and that is the premise.
+        """
+        volumes = [artifact for artifact in self.of_kind(VOLUME)]
+        sent = [artifact for artifact in volumes if artifact.source == acquisition]
+        produced = [artifact for artifact in volumes if artifact.source != acquisition]
+        if not sent or not produced:
+            return None
+        overlays = [artifact for artifact in self.of_kind(*OVERLAY_KINDS)
+                    if artifact is not sent[0] and artifact is not produced[0]]
+        return View(sent[0], overlays, BASIS_REGISTERED, compare=produced[0])
+
+    def views(self, acquisition: str = "", registered: bool = False) -> list:
         """The pictures this case can honestly produce.
 
         One per anchor, holding the overlays written beside it. Overlays with
         no anchor in their own folder fall back to the acquisition's scan and
         say so -- that is `ALI`, whose landmark file is alone in its directory
         and belongs to the scan the caller sent.
+
+        `registered` says the tool declared what it wrote to be a
+        registration, so its scan is in the acquisition's frame and the two
+        belong in ONE picture -- the acquisition anchoring it, the result
+        compared against it. Off by default and off for everything else: see
+        `BASIS_REGISTERED` for why this is declared rather than detected.
         """
+        if registered and acquisition:
+            paired = self._registered_onto(acquisition)
+            if paired is not None:
+                return [paired]
         anchors = self.of_kind(*ANCHOR_KINDS)
         overlays = self.of_kind(*OVERLAY_KINDS)
         # A labelmap and a surface are both: they anchor a view of their own and
@@ -468,6 +520,61 @@ def folders_in(cases) -> list:
     return found
 
 
+def _stated_cases(root: str) -> dict:
+    """`{path or file name: case id}`, from a run report that says so.
+
+    **The end of the guessing, where a run says out loud what it produced.**
+    This module's own first paragraph calls itself "a third copy of an
+    algorithm, deliberately" and names the day it ends: the day a run
+    publishes a manifest naming its own outputs. Eleven tools of the
+    catalogue publish `{"cases": {<id>: {"produced": [...], "inputs": {...}}}}`
+    and this reads it.
+
+    Names cannot carry it, and not for want of a better table. AREG's output
+    suffix is an ARGUMENT -- `output_suffix="Reg"` by default and whatever the
+    caller asks for otherwise -- so `P1_T1.nii.gz` becomes `P1_Reg.nii.gz` or
+    `P1_aligned.nii.gz` at the caller's choice, and no static list of markers
+    can reconcile the two. Measured on 2026-09-30: indexed by name, one
+    patient's input and output keyed as `P1_T1` and `P1_Reg`, two cases, and
+    the comparison between them had nothing to stand on.
+
+    Both spellings are offered for one reason: a manifest names a case's
+    outputs relative to the OUTPUT folder and its inputs relative to whichever
+    argument they came from, and this function is handed one root at a time
+    with no way to tell which is which. The relative path is tried first and
+    the bare file name second, which within one run is unambiguous.
+
+    `{}` for a folder with no report, an unreadable one, or one in an older
+    vocabulary -- and the caller then keys by name exactly as before.
+    """
+    stated = {}
+    for filename in sorted(os.listdir(root)) if os.path.isdir(root) else ():
+        if not _is_report(filename):
+            continue
+        try:
+            with open(os.path.join(root, filename), encoding="utf-8") as handle:
+                document = json.load(handle)
+        except (OSError, ValueError):
+            continue
+        cases = document.get("cases")
+        if not isinstance(cases, dict):
+            continue
+        for case, entry in cases.items():
+            if not isinstance(case, str) or not isinstance(entry, dict):
+                continue
+            paths = list(entry.get("produced") or ())
+            paths.extend(
+                path for path in (entry.get("inputs") or {}).values()
+                if isinstance(path, str)
+            )
+            for path in paths:
+                if not isinstance(path, str) or not path:
+                    continue
+                stated.setdefault(path.replace("\\", "/"), case)
+                stated.setdefault(os.path.basename(path), case)
+    return stated
+
+
 def build(sources, drop_timepoint: bool = False) -> list:
     """Index `sources` -- `[(label, root), ...]` -- into cases, ordered by key.
 
@@ -477,6 +584,17 @@ def build(sources, drop_timepoint: bool = False) -> list:
     its own.
     """
     cases = {}
+    # Every root's manifest, merged, BEFORE any of them is walked. One run
+    # writes one report and it sits in the output folder, so reading it per
+    # root left the input folder with nothing to go on -- and the input is
+    # exactly the half that has to be keyed the same way for a case to hold
+    # both. Merged, a report in any source speaks for all of them, which is
+    # what one run over several folders actually is.
+    stated = {}
+    for _label, root in sources:
+        if root and os.path.isdir(root):
+            for path, case in _stated_cases(root).items():
+                stated.setdefault(path, case)
     for label, root in sources:
         if not root or not os.path.isdir(root):
             continue
@@ -512,12 +630,21 @@ def build(sources, drop_timepoint: bool = False) -> list:
                 kind = kind_of(filename, full)
                 if kind is None:
                     continue
-                # A declaring folder outranks the file name: it is the only
-                # place AMASSS's scan stem survives the prediction id.
-                patient = patient_stem(
-                    declared or filename, drop_timepoint=drop_timepoint
-                )
-                key = os.path.join(relative, patient) if relative else patient
+                # The run's own word outranks everything: a manifest states
+                # which case a file belongs to, and the id IS the key -- NOT
+                # joined to the directory, or `CB/C_0001` and `T1/C_0001`
+                # stay the two cases this exists to make one.
+                inside = os.path.relpath(full, root).replace(os.sep, "/")
+                spoken = stated.get(inside) or stated.get(filename)
+                if spoken:
+                    patient, key = spoken, spoken
+                else:
+                    # A declaring folder outranks the file name: it is the only
+                    # place AMASSS's scan stem survives the prediction id.
+                    patient = patient_stem(
+                        declared or filename, drop_timepoint=drop_timepoint
+                    )
+                    key = os.path.join(relative, patient) if relative else patient
                 case = cases.setdefault(key, Case(key))
                 case.artifacts.append(
                     Artifact(full, kind, label, relative, patient, origin=raw)

@@ -6,6 +6,7 @@ landmarks, AMASSS puts the scan's stem in a folder name, Crown_Seg files half
 a batch one level deeper than the other half.
 """
 
+import json
 import os
 import sys
 import tempfile
@@ -373,3 +374,92 @@ class FolderTest(unittest.TestCase):
     def test_a_folder_with_no_levels_offers_one_entry(self):
         cases = self._cases(["d/p1_scan.nii.gz", "d/p2_scan.nii.gz"])
         self.assertEqual(index.folders_in(cases), [index.AT_THE_TOP])
+
+
+class RegisteredComparisonTest(unittest.TestCase):
+    """Two scans in ONE picture, which every other basis exists to refuse.
+
+    `View`'s own docstring says an oriented scan and the one it was made from
+    are not the same picture, and that drawing either on the other is wrong by
+    a rotation and renders without an error. A registration is the exception
+    and is honest by construction -- the result was resampled into the
+    target's frame -- so it is DECLARED by the tool, never detected here.
+    """
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+
+    def _folders(self, sent, produced, manifest=True):
+        """Two labelled folders, and the run's own word on what belongs where.
+
+        The manifest is what makes them ONE case. Without it the input and the
+        output key apart -- `P1_T1` against `P1_Reg` -- and no table of markers
+        can fix that, because AREG's output suffix is an argument the caller
+        chooses.
+        """
+        for label, names in (("sent", sent), ("produced", produced)):
+            folder = os.path.join(self.root, label)
+            os.makedirs(folder, exist_ok=True)
+            for name in names:
+                open(os.path.join(folder, name), "w").close()
+        if manifest:
+            cases = {}
+            for index_of, name in enumerate(produced):
+                cases.setdefault("P1", {"produced": [], "inputs": {}})
+                cases["P1"]["produced"].append(name)
+            for name in sent:
+                cases.setdefault("P1", {"produced": [], "inputs": {}})
+                cases["P1"]["inputs"]["t1"] = name
+            with open(os.path.join(self.root, "produced", "Tool_report.json"),
+                      "w", encoding="utf-8") as handle:
+                json.dump({"cases": cases}, handle)
+        return [("Scans", os.path.join(self.root, "sent")),
+                ("Results", os.path.join(self.root, "produced"))]
+
+    def test_the_acquisition_anchors_and_the_result_is_compared_to_it(self):
+        cases = index.build(self._folders(["P1_T1.nii.gz"], ["P1_Reg.nii.gz"]))
+
+        views = cases[0].views(acquisition="Scans", registered=True)
+
+        self.assertEqual(len(views), 1, "one picture, not two")
+        self.assertEqual(views[0].anchor.name, "P1_T1.nii.gz")
+        self.assertEqual(views[0].compare.name, "P1_Reg.nii.gz")
+        self.assertEqual(views[0].basis, index.BASIS_REGISTERED)
+
+    def test_without_the_declaration_they_stay_two_pictures(self):
+        """The default, and what every tool that is not a registration gets.
+
+        One case -- the manifest said so -- and still two pictures, because
+        nobody said the two scans share a frame.
+        """
+        cases = index.build(self._folders(["P1_T1.nii.gz"], ["P1_Reg.nii.gz"]))
+
+        views = cases[0].views(acquisition="Scans")
+
+        self.assertEqual(len(views), 2)
+        self.assertTrue(all(view.compare is None for view in views))
+
+    def test_with_no_manifest_the_two_files_are_two_cases(self):
+        """What it was before, and the reason the manifest exists: an input
+        and an output of one patient key apart, so nothing holds both."""
+        cases = index.build(
+            self._folders(["P1_T1.nii.gz"], ["P1_Reg.nii.gz"], manifest=False))
+
+        self.assertEqual(sorted(case.key for case in cases), ["P1_Reg", "P1_T1"])
+
+    def test_a_case_the_run_produced_nothing_for_is_not_shown_an_empty_compare(self):
+        cases = index.build(self._folders(["P1_T1.nii.gz"], []))
+
+        views = cases[0].views(acquisition="Scans", registered=True)
+
+        self.assertEqual([view.compare for view in views], [None])
+
+    def test_a_result_with_no_acquisition_beside_it_falls_through(self):
+        """A reader who opened the results folder alone. There is nothing to
+        compare against, and inventing an anchor would be the rotation bug."""
+        cases = index.build(self._folders([], ["P1_Reg.nii.gz"]))
+
+        views = cases[0].views(acquisition="Scans", registered=True)
+
+        self.assertEqual([view.compare for view in views], [None])
+        self.assertEqual(views[0].anchor.name, "P1_Reg.nii.gz")
