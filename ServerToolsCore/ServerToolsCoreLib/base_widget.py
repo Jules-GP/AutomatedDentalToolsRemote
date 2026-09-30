@@ -2604,7 +2604,8 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
             return
         self._returnFromReview()
         self._resumeRun(run, self._corrections(run, reviewed),
-                        rewind_to=(reviewed or {}).get("rewind_to"))
+                        rewind_to=(reviewed or {}).get("rewind_to"),
+                        replay=(reviewed or {}).get("replay") or ())
 
     def _returnFromReview(self) -> None:
         """Bring this panel back up, now that the reader has finished.
@@ -2663,12 +2664,18 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 corrections[slot] = self._zipFolder(run.workspace, slot, path, entries)
         return corrections
 
-    def _resumeRun(self, run, corrections, rewind_to=None) -> None:
+    def _resumeRun(self, run, corrections, rewind_to=None, replay=()) -> None:
         """POST the corrections and move the run, on a thread of its own.
 
         `rewind_to` sends it BACKWARDS to a checkpoint it already cleared,
         instead of onwards. The callbacks are the same either way, and so is
         the answer: a finished run, or another checkpoint.
+
+        `replay` is the cases the reader marked, and it travels even on a
+        plain Continue -- their verdict is theirs whichever direction the run
+        then moves. It is not derivable from `corrections`: marking a bad
+        registration means changing no file, because the landmarks that
+        caused it are two steps back.
 
         The same callbacks as a first attempt, deliberately: the answer of a
         resume is whatever a finished run answers -- or ANOTHER checkpoint,
@@ -2688,6 +2695,7 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 output_dir=run.output_dir,
                 progress_cb=progress_cb,
                 rewind_to=rewind_to,
+                replay=replay,
             )
 
         run.job = BackgroundJob(

@@ -1263,6 +1263,7 @@ class ToolServerClient:
         output_dir: Optional[str] = None,
         progress_cb: Optional[Callable[[str], None]] = None,
         rewind_to: Optional[str] = None,
+        replay=(),
     ) -> ToolResult:
         """Carry a stopped run on: POST /runs/{id}/resume.
 
@@ -1271,6 +1272,14 @@ class ToolServerClient:
         result untouched for a reader to correct. The same route otherwise --
         one more field, one different path -- because what comes back is the
         same thing either way: a finished run, or another checkpoint.
+
+        `replay` names the cases a reader asked to have done again. It is NOT
+        derivable from `corrections`, which is the reason it is a field of its
+        own: a reader who sees a registration land two millimetres off cannot
+        fix it where they are -- the landmarks that caused it are two steps
+        back -- so they mark the patient and change no file at all. Without
+        this, the server has only the corrections to go on and replays the
+        whole cohort: slower, never wrong, and not what was asked.
 
         `corrections` is {step name: local path}, the step names being exactly
         the `produced` entries of the checkpoint -- the server matches them
@@ -1309,6 +1318,15 @@ class ToolServerClient:
                 # the whole body as a form, so the two travel together and a
                 # rewind carrying corrections is one request.
                 payload["to"] = (None, rewind_to)
+            for number, case in enumerate(sorted(replay or ())):
+                if not isinstance(case, str) or not case:
+                    continue
+                # One field per case rather than a joined string: a patient
+                # identifier is whatever a clinic names its folders, and
+                # picking a separator is picking one that will appear in a
+                # name. Numbered because a form is a mapping and several
+                # values need several keys.
+                payload[f"case_{number}"] = (None, case)
             for slot, path in (corrections or {}).items():
                 handle = open(path, "rb")
                 handles.append(handle)

@@ -340,11 +340,12 @@ class _RecordingClient:
         raise AssertionError("the stub job never invokes its target")
 
     def resume_run(self, tool_name, run_id, corrections=None, output_dir=None,
-                   progress_cb=None, rewind_to=None):
+                   progress_cb=None, rewind_to=None, replay=()):
         self.resumed.append({"tool": tool_name, "run_id": run_id,
                              "corrections": dict(corrections or {}),
                              "output_dir": output_dir,
-                             "rewind_to": rewind_to})
+                             "rewind_to": rewind_to,
+                             "replay": list(replay or ())})
         return ToolResult(kind="text", text="carried on")
 
     def cancel_run(self, run_id):
@@ -1121,3 +1122,35 @@ class RegistrationDeclarationTest(PanelTest):
         self._stopped(stopped_after="Registration")
 
         self.assertFalse(self.reviewer.registered)
+
+
+class TheVerdictTravelsTest(PanelTest):
+    """The cases a reader marked reach the server, beside what they changed.
+
+    Not derivable from the corrections: marking a bad registration means
+    changing no file, because the landmarks that caused it are two steps back.
+    """
+
+    def test_the_marked_cases_are_sent_on_a_rewind(self):
+        self._stopped()
+        self.reviewer.press_continue(replay=("P1", "P3"),
+                                     rewind_to="01_ALI_CBCT")
+
+        sent = self._collectResume()
+        self.assertEqual(sorted(sent["replay"]), ["P1", "P3"])
+        self.assertEqual(sent["rewind_to"], "01_ALI_CBCT")
+
+    def test_they_are_sent_on_a_plain_continue_too(self):
+        """Their verdict is theirs whichever direction the run then moves, and
+        a second checkpoint further on may well want to know it."""
+        self._stopped()
+        self.reviewer.press_continue(replay=("P2",))
+
+        sent = self._collectResume()
+        self.assertEqual(sorted(sent["replay"]), ["P2"])
+
+    def test_a_reader_who_marked_nothing_sends_nothing(self):
+        self._stopped()
+        self.reviewer.press_continue()
+
+        self.assertEqual(list(self._collectResume()["replay"]), [])
