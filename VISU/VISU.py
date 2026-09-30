@@ -583,6 +583,13 @@ class VISUWidget(ScriptedLoadableModuleWidget):
         # corrects a landmark without asking for a replay, and asks for one on
         # a patient they could not correct at all.
         self._written = set()
+        # The case keys this reader has actually had on screen. A reader who
+        # marked three of forty after looking at three has judged three; the
+        # panel says so rather than implying the cohort was reviewed. It is
+        # NOT a gate on the replay button: somebody who spots a bad
+        # registration on the first case and wants it redone must not have to
+        # click through thirty-nine others to ask.
+        self._seen = set()
         # `{file: {label: RAS position}}` as each landmark file was FIRST
         # read this session -- what the tool produced, before this reader
         # touched it. Kept in memory rather than as a backup file beside the
@@ -881,6 +888,20 @@ class VISUWidget(ScriptedLoadableModuleWidget):
         self.continueButton.setVisible(False)
         self.panel.addWidget(self.continueButton)
 
+        # A button of its own, and not the Continue button changing what it
+        # means. It said "Continue" with nothing marked and "Go back to ASO
+        # for 3 patient(s)" with three, so the one control a reader had did
+        # two opposite things depending on state they had to remember setting.
+        # Two buttons say what each does and neither has to be read twice.
+        #
+        # Below Continue rather than above: carrying on is the ordinary end of
+        # a review and asking for a replay is the exception, so the exception
+        # does not sit where the thumb lands.
+        self.replayButton = design.secondary_button(_("Replay the marked cases"))
+        self.replayButton.connect("clicked()", self.onReplay)
+        self.replayButton.setVisible(False)
+        self.panel.addWidget(self.replayButton)
+
     # -- settings ----------------------------------------------------------
 
     def _restore(self) -> None:
@@ -1106,23 +1127,33 @@ class VISUWidget(ScriptedLoadableModuleWidget):
         else:
             self.replayToggle.setText(_("Replay this case"))
 
-        if self._goingBack():
-            self.continueButton.setText(
-                _("Go back to {step} for {count} patient(s)").format(
-                    step=self._rewind.get("tool") or _("the previous step"),
-                    count=len(self._toReplay)))
-            self.continueButton.toolTip = _(
-                "Write what you corrected, then take the marked patients "
-                "back to that step so they can be done again from there. "
-                "Everyone else keeps the result they already have."
-            )
-        else:
-            self.continueButton.setText(_("Continue"))
-            self.continueButton.toolTip = _(
-                "Give this back to the tool that opened it. What you "
-                "corrected is written first, then the run carries on from "
-                "where it stopped."
-            )
+        # Continue means one thing now, whatever is marked.
+        self.continueButton.setText(_("Continue"))
+        self.continueButton.toolTip = _(
+            "Give this back to the tool that opened it. What you corrected is "
+            "written first, then the run carries on from where it stopped."
+        )
+
+        self.replayButton.setVisible(self._goingBack())
+        if not self._goingBack():
+            return
+        step = self._rewind.get("tool") or _("the previous step")
+        self.replayButton.setText(
+            _("Replay {count} case(s) from {step}").format(
+                count=len(self._toReplay), step=step))
+        unseen = max(0, len(self.cases) - len(self._seen))
+        self.replayButton.toolTip = _(
+            "Write what you corrected, then take the marked cases back to "
+            "{step} so they are done again from there. Everyone else keeps "
+            "the result they already have."
+        ).format(step=step)
+        if unseen:
+            # Said rather than enforced. A reader who has looked at three of
+            # forty may be entirely right about those three, and a disabled
+            # button would make them click through the rest to say so.
+            self.replayButton.toolTip += "\n\n" + _(
+                "{unseen} case(s) in this folder you have not opened yet."
+            ).format(unseen=unseen)
 
     def onReplayToggled(self) -> None:
         if not self.cases:
@@ -1178,6 +1209,7 @@ class VISUWidget(ScriptedLoadableModuleWidget):
             self.positionLabel.text = ""
             return
         case = self.cases[self.position]
+        self._seen.add(case.key)
         self.positionLabel.text = _("{at} of {total} - {patient}{mark}").format(
             at=self.position + 1, total=len(self.cases), patient=case.label,
             mark=_("   TO REPLAY") if case.key in self._toReplay else "",
@@ -1725,23 +1757,41 @@ class VISUWidget(ScriptedLoadableModuleWidget):
             "rewind_to": rewind_to,
         }
 
+    def onReplay(self) -> None:
+        """Hand back, asking for the marked cases to be done again.
+
+        The same hand-back as Continue -- what the reader corrected is written
+        either way, because a reader who fixed a landmark on the way to asking
+        for an earlier step still fixed it -- and it differs only in carrying
+        the step to return to.
+        """
+        self._handBack(rewind_to=self._rewind.get("slot") if self._rewind else None)
+
     def onContinue(self) -> None:
         """Write what is pending, then hand control back. Once."""
         if self._continue is None:
             return
-        # The reader pressed Continue rather than Save, and the point they
-        # just dragged is exactly what the caller is about to collect. Same
-        # call the arrows make on the way out of a patient.
+        self._handBack(rewind_to=None)
+
+    def _handBack(self, rewind_to) -> None:
+        """Write what is pending, then hand control back. Once.
+
+        Shared by both buttons: they differ in where the run goes next and in
+        nothing else, and writing that twice is how the two would drift.
+        """
+        if self._continue is None:
+            return
+        # The reader pressed a button rather than Save, and the point they just
+        # dragged is exactly what the caller is about to collect. Same call the
+        # arrows make on the way out of a patient.
         self._leaving()
         # Taken before it is called: the handler will start an upload and may
-        # well come back through this panel, and a second Continue would
-        # resume one run twice.
+        # well come back through this panel, and a second press would resume
+        # one run twice.
         handler, self._continue = self._continue, None
-        # Read BEFORE the button is hidden and while the marks are still
-        # standing: this is the one place the two destinations part company.
-        backwards = self._rewind.get("slot") if self._goingBack() else None
         self.continueButton.setVisible(False)
-        handler(self.reviewed(rewind_to=backwards))
+        self.replayButton.setVisible(False)
+        handler(self.reviewed(rewind_to=rewind_to))
 
     # -- leaving -----------------------------------------------------------
 

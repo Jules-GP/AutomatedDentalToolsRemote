@@ -1225,16 +1225,40 @@ class HandingBackTest(unittest.TestCase):
             self.handed.append, rewind=self.BACK)
         self.assertEqual(self.widget.continueButton.text, "Continue")
 
-    def test_marking_a_patient_turns_the_button_into_the_way_back(self):
+    def test_marking_a_patient_offers_a_replay_beside_continue(self):
+        """Two buttons, not one that changes what it means.
+
+        It said "Continue" with nothing marked and "Go back to ALI_CBCT for 3
+        patient(s)" with three, so the one control a reader had did two
+        opposite things depending on state they had to remember setting.
+        """
         self.widget.openForReview(
             self.folder([f"results/p{n}_scan.nii.gz" for n in (1, 2)]),
             self.handed.append, rewind=self.BACK)
         self.widget.replayToggle.setChecked(True)
         self.widget.onReplayToggled()
-        self.assertEqual(self.widget.continueButton.text,
-                         "Go back to ALI_CBCT for 1 patient(s)")
 
-    def test_pressing_it_asks_for_the_step_the_marked_patients_go_back_to(self):
+        self.assertEqual(self.widget.continueButton.text, "Continue")
+        self.assertTrue(self.widget.replayButton.isVisible())
+        self.assertEqual(self.widget.replayButton.text,
+                         "Replay 1 case(s) from ALI_CBCT")
+
+    def test_the_replay_button_asks_for_the_step_the_marked_cases_go_back_to(self):
+        self.widget.openForReview(
+            self.folder([f"results/p{n}_scan.nii.gz" for n in (1, 2)]),
+            self.handed.append, rewind=self.BACK)
+        self.widget.replayToggle.setChecked(True)
+        self.widget.onReplayToggled()
+
+        self.widget.onReplay()
+
+        self.assertEqual(self.handed[0]["rewind_to"], "01_ALI_CBCT")
+        self.assertEqual(self.handed[0]["replay"], {"p1"})
+
+    def test_continue_carries_on_even_with_cases_marked(self):
+        """The marks are still the reader's verdict and still travel -- what
+        Continue no longer does is act on them. A reader who marked two and
+        then pressed Continue meant Continue."""
         self.widget.openForReview(
             self.folder([f"results/p{n}_scan.nii.gz" for n in (1, 2)]),
             self.handed.append, rewind=self.BACK)
@@ -1243,8 +1267,19 @@ class HandingBackTest(unittest.TestCase):
 
         self.widget.onContinue()
 
-        self.assertEqual(self.handed[0]["rewind_to"], "01_ALI_CBCT")
+        self.assertIsNone(self.handed[0]["rewind_to"])
         self.assertEqual(self.handed[0]["replay"], {"p1"})
+
+    def test_pressing_a_button_twice_hands_back_once(self):
+        """Either button starts an upload and may come back through this
+        panel; a second press would resume one run twice."""
+        self.widget.openForReview(
+            self.folder(["results/p1_scan.nii.gz"]),
+            self.handed.append, rewind=self.BACK)
+        self.widget.onContinue()
+        self.widget.onReplay()
+
+        self.assertEqual(len(self.handed), 1)
 
     def test_with_nothing_marked_it_hands_back_no_step_at_all(self):
         # The same button, the same press: what parts company is the mark.
@@ -1284,8 +1319,8 @@ class HandingBackTest(unittest.TestCase):
         folder = self.folder([f"results/p{n}_scan.nii.gz" for n in (1, 2)])
         review.save(folder, {"p1", "p2"})
         self.widget.openForReview(folder, self.handed.append, rewind=self.BACK)
-        self.assertEqual(self.widget.continueButton.text,
-                         "Go back to ALI_CBCT for 2 patient(s)")
+        self.assertEqual(self.widget.replayButton.text,
+                         "Replay 2 case(s) from ALI_CBCT")
 
     def test_continue_writes_the_correction_before_handing_back(self):
         # The reader pressed Continue, not Save, and the point they just
