@@ -2340,6 +2340,57 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # deployment that ships without it must still run every tool it does have.
     REVIEW_MODULE = "VISU"
 
+    def _acquisitionSources(self, run) -> list:
+        """The folders this run was GIVEN, for the reviewer to draw against.
+
+        A checkpoint archive holds what a step produced and never what it
+        consumed -- the inputs are the clinician's own files and were never
+        going to be sent back. So a reader looking at ALI's landmarks had no
+        scan under them, and one looking at a registered scan had nothing to
+        compare it to.
+
+        Handed over for EVERY pause, not only a registration: the acquisition
+        is what `index` falls back to for an overlay with no anchor of its own,
+        which is most of them. What is conditional is whether the two scans go
+        in one picture, and that is `_stopIsARegistration`.
+
+        A single FILE is offered as the folder holding it: the reviewer indexes
+        directories, and a clinician who picked one scan still wants to see it.
+        """
+        sources = []
+        for argument, path in (getattr(run, "files", None) or {}).items():
+            if not isinstance(path, str) or not path:
+                continue
+            folder = path if os.path.isdir(path) else os.path.dirname(path)
+            if not folder or not os.path.isdir(folder):
+                continue
+            if any(existing == folder for _label, existing in sources):
+                # Two arguments under one folder -- `t1` and `t2` of a cohort
+                # the clinician keeps together. Indexing it twice would list
+                # every case twice.
+                continue
+            sources.append((argument, folder))
+        return sources
+
+    def _stopIsARegistration(self, checkpoint) -> bool:
+        """Whether what this stop produced is in the acquisition's frame.
+
+        Read off the schema, which the server composed from the tool that
+        WROTE the files -- the same `option_kind` that says whether a stop can
+        be corrected. A tool declaring `registration` has said its output was
+        resampled onto its input, which is the one case where two greyscale
+        volumes belong in one picture.
+
+        Never inferred from the tool's name or the file's: an oriented scan and
+        the one it was made from are also two volumes of one patient, and
+        drawing them together is wrong by a rotation and renders without an
+        error.
+        """
+        kinds = ((getattr(self, "_schema", None) or {}).get("arguments", {})
+                 .get("stop_after", {}).get("option_kind") or {})
+        standing = (getattr(checkpoint, "stopped_after", "") or "")
+        return kinds.get(standing) == "registration"
+
     def _reviewCheckpoint(self, run, checkpoint) -> None:
         """Put what the run produced so far in front of a reader.
 
@@ -2357,6 +2408,8 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
         opened = folder is not None and self._openReviewer(
             folder, lambda reviewed, run=run: self._onReviewed(run, reviewed),
             rewind=self._previousCorrectableStep(run),
+            beside=self._acquisitionSources(run),
+            registered=self._stopIsARegistration(checkpoint),
             origin={"tool": self.TOOL_NAME,
                     "step": checkpoint.stopped_after or "",
                     "run": run.number})
@@ -2419,7 +2472,7 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
         return None
 
     def _openReviewer(self, folder: str, on_continue, rewind=None,
-                      origin=None) -> bool:
+                      origin=None, beside=(), registered: bool = False) -> bool:
         """Hand `folder` to the review module. False when it could not be.
 
         `rewind` is where the marked patients may be sent BACK to, or None. The
@@ -2432,8 +2485,9 @@ class ServerToolWidgetBase(ScriptedLoadableModuleWidget, VTKObservationMixin):
         """
         try:
             module = importlib.import_module(self.REVIEW_MODULE)
-            return bool(module.open_for_review(folder, on_continue, rewind=rewind,
-                                               origin=origin))
+            return bool(module.open_for_review(
+                folder, on_continue, rewind=rewind, origin=origin,
+                beside=beside, registered=registered))
         except Exception as exc:  # noqa: BLE001 - reported, never raised
             logger.warning("Could not open '%s' on %s: %s",
                            self.REVIEW_MODULE, folder, exc)

@@ -92,6 +92,19 @@ SAMPLE_DATA = (
 # and ASO both name CT-AAA for the scans they return. `slicer_io` applies the
 # shift it measured on a scan out of this pipeline over the top.
 VOLUME_RENDERING = "CT-AAA"
+# The preset the COMPARED scan is rendered with, when a view holds two.
+#
+# A different one, and that is the whole reason it is a second constant. Two
+# CBCT of one patient have the same intensities by construction -- one is the
+# other resampled -- so rendering both with `CT-AAA` puts two identical tans
+# on top of each other and a reader cannot tell which surface they are
+# looking at. `CT-Bone` is the grey-white end of the stock presets, so the
+# acquisition reads tan and the registered result reads bone.
+#
+# Declared here for the reason `slicer_io.show_volume_rendering` gives about
+# the first one: which curve suits a result is the MODULE's to say, and
+# changing this is one line.
+VOLUME_RENDERING_COMPARE = "CT-Bone"
 
 # How a mask is opened when it cannot be the slice label layer. Not one of
 # `index`'s kinds: what the file IS stays a labelmap, this is only how it is
@@ -352,7 +365,8 @@ class SceneLoader:
             logger.warning("Could not draw a surface on the slices: %s", exc)
 
     @staticmethod
-    def display(anchor, anchor_node, label_node, reframe: bool = True) -> None:
+    def display(anchor, anchor_node, label_node, reframe: bool = True,
+                compare_node=None) -> None:
         """Put the case on screen the way it is meant to be read.
 
         Loading a node is not showing it. A volume lands in the slice views
@@ -377,6 +391,16 @@ class SceneLoader:
                     # The same preset the CBCT panels use, with the shift
                     # `slicer_io` measured on a scan out of this pipeline.
                     slicer_io.show_volume_rendering(anchor_node, VOLUME_RENDERING)
+                if compare_node is not None:
+                    # A SECOND rendering in the same 3D view: the registered
+                    # result over the scan it was registered onto, which is the
+                    # one picture where the two belong together. Its own preset,
+                    # or the two are indistinguishable -- see
+                    # VOLUME_RENDERING_COMPARE. Nothing here checks that they
+                    # share a frame; `index.BASIS_REGISTERED` is what said so,
+                    # on the tool's word.
+                    slicer_io.show_volume_rendering(
+                        compare_node, VOLUME_RENDERING_COMPARE)
             if reframe:
                 SceneLoader._frame3D()
         except Exception as exc:  # noqa: BLE001 - a view is never worth a failure
@@ -510,7 +534,8 @@ def reviewable(folder: str) -> bool:
         return False
 
 
-def open_for_review(folder: str, on_continue, rewind=None, origin=None) -> bool:
+def open_for_review(folder: str, on_continue, rewind=None, origin=None,
+                    beside=(), registered: bool = False) -> bool:
     """Bring this module up on `folder`, with a Continue that calls back.
 
     Here rather than in the caller, and it is the only reason this function
@@ -530,7 +555,8 @@ def open_for_review(folder: str, on_continue, rewind=None, origin=None) -> bool:
     except Exception as exc:  # noqa: BLE001 - reported to the caller, not raised
         logger.warning("Could not open VISU on %s: %s", folder, exc)
         return False
-    widget.openForReview(folder, on_continue, rewind=rewind, origin=origin)
+    widget.openForReview(folder, on_continue, rewind=rewind, origin=origin,
+                         beside=beside, registered=registered)
     return True
 
 
@@ -590,6 +616,22 @@ class VISUWidget(ScriptedLoadableModuleWidget):
         # registration on the first case and wants it redone must not have to
         # click through thirty-nine others to ask.
         self._seen = set()
+        # Extra folders the caller asked to be indexed WITH the reviewed one,
+        # as `[(label, path)]`. The acquisition, in practice: a pause hands
+        # back what a step produced and never the scans the clinician sent, so
+        # without these there is nothing to draw a result against.
+        self._beside = []
+        # Whether the caller declared what it produced to be a registration --
+        # and therefore in the acquisition's frame. See
+        # `index.BASIS_REGISTERED`: this is never inferred here.
+        self._registered = False
+        # Which source holds the scans as they were ACQUIRED. The reviewed
+        # folder, for a reader who opened one themselves -- there is nothing
+        # else. At a pause it is one of `_beside`: what is being reviewed
+        # there is what a step PRODUCED, and calling that the acquisition
+        # would draw a tool's own output under its own points and call it
+        # confirmation.
+        self._acquisition = SOURCE
         # `{file: {label: RAS position}}` as each landmark file was FIRST
         # read this session -- what the tool produced, before this reader
         # touched it. Kept in memory rather than as a backup file beside the
@@ -928,7 +970,8 @@ class VISUWidget(ScriptedLoadableModuleWidget):
         folder = self.folderInput.currentPath
         # Everything the folder holds. `self.cases` is the ticked view of it,
         # so unticking a cohort costs a filter rather than another walk.
-        self._allCases = index.build([(SOURCE, folder)] if folder else [])
+        self._allCases = index.build(
+            ([(SOURCE, folder)] if folder else []) + list(self._beside))
         self._offerFolders()
         self.cases = self._ticked()
         self.position = 0
@@ -1351,14 +1394,18 @@ class VISUWidget(ScriptedLoadableModuleWidget):
         for artifact, node in self.scene.shown():
             self.scene.set_visible(node, artifact.kind in wanted)
 
-        anchor, anchor_node, label_node = getattr(
-            self, "_anchorLayers", (None, None, None))
+        anchor, anchor_node, label_node, compare_node = getattr(
+            self, "_anchorLayers", (None, None, None, None))
         on = anchor is not None and anchor.kind in wanted
         self.scene.display(anchor if on else None,
                            anchor_node if on else None,
                            label_node if label_node is not None
                            and index.LABELMAP in wanted else None,
-                           reframe=reframe)
+                           reframe=reframe,
+                           # Follows the volume chip: a reader who unticked
+                           # scans wants neither of the two, not one of them.
+                           compare_node=(compare_node
+                                         if index.VOLUME in wanted else None))
 
     def wanted_kinds(self) -> set:
         """The kinds the check boxes are letting through."""
@@ -1398,7 +1445,8 @@ class VISUWidget(ScriptedLoadableModuleWidget):
             self.caseCombo.setCurrentIndex(self.position)
 
         self._offerWhatIsThere(self.cases[self.position])
-        self.views = self.cases[self.position].views(acquisition=SOURCE)
+        self.views = self.cases[self.position].views(
+            acquisition=self._acquisition, registered=self._registered)
         self.viewCombo.clear()
         for view in self.views:
             self.viewCombo.addItem(view.label)
@@ -1439,6 +1487,10 @@ class VISUWidget(ScriptedLoadableModuleWidget):
 
         anchor_node = self.scene.load(anchor) if anchor is not None else None
         self._anchorNode = anchor_node
+        # Loaded like everything else, so the chips can switch it off and the
+        # reader is not stuck with two volumes when they wanted one.
+        compare_node = (self.scene.load(view.compare)
+                        if view.compare is not None else None)
         on_a_scan = anchor is not None and anchor.kind == index.VOLUME
         masks = [o for o in overlays if o.kind == index.LABELMAP]
         # One mask can be the volume's label layer. Several cannot, so they
@@ -1471,14 +1523,21 @@ class VISUWidget(ScriptedLoadableModuleWidget):
         # is applied over them, so stepping to the next patient does not
         # quietly re-lock what they unlocked.
         self._applyLock()
-        self._anchorLayers = (anchor, anchor_node, label_node)
+        self._anchorLayers = (anchor, anchor_node, label_node, compare_node)
         self._applyVisibility(reframe=reframe)
         if reframe and points:
             # The slices open on the volume's centre and the points are not
             # there. One of them has to be, or the chip looks broken.
             self.scene.jump_to(points[0])
 
-        if overlays:
+        if view.compare is not None:
+            # Said outright, and named: two greyscale volumes in one 3D view
+            # look like one scan with a strange surface until the line below
+            # says which is which.
+            self.frameLabel.text = _("{result} {basis}: {scan}").format(
+                result=view.compare.name, basis=view.basis, scan=view.label,
+            )
+        elif overlays:
             self.frameLabel.text = _("Drawn on {scan} ({basis})").format(
                 scan=view.label, basis=view.basis
             )
@@ -1691,7 +1750,7 @@ class VISUWidget(ScriptedLoadableModuleWidget):
     # -- opened by somebody else ---------------------------------------------
 
     def openForReview(self, folder: str, on_continue=None, rewind=None,
-                      origin=None) -> None:
+                      origin=None, beside=(), registered: bool = False) -> None:
         """Show `folder`, and give the caller a way to be told when to carry on.
 
         This is the whole of what VISU learns about the thing that opened it.
@@ -1703,6 +1762,18 @@ class VISUWidget(ScriptedLoadableModuleWidget):
         who opened VISU themselves passes none and sees none, because they
         have nothing to hand back to.
 
+        `beside` is `[(label, folder)]` to index WITH this one and not review:
+        the scans the caller sent. A pause hands back what a step produced and
+        never its inputs, so without them a result has nothing to be drawn
+        against -- ALI's landmarks have no scan at all, and a registered scan
+        has nothing to be compared to. The first label is taken as the
+        acquisition, which is what `index` falls back to for an overlay with
+        no anchor of its own.
+
+        `registered` says the caller declared what it produced to be in the
+        acquisition's frame, which puts the two scans in ONE view. VISU does
+        not decide that and could not: see `index.BASIS_REGISTERED`.
+
         `rewind` is the step a reader may send the marked patients BACK to, as
         `{"slot", "tool", "kind"}`, or None when there is nowhere to go --
         which is the ordinary case and is why it defaults to none. VISU still
@@ -1711,6 +1782,12 @@ class VISUWidget(ScriptedLoadableModuleWidget):
         """
         self._continue = on_continue
         self._rewind = rewind
+        # Set BEFORE the folder is, because setting the folder indexes -- and
+        # indexing is what has to see them.
+        self._beside = [(label, path) for label, path in (beside or ())
+                        if label and path]
+        self._registered = bool(registered)
+        self._acquisition = self._beside[0][0] if self._beside else SOURCE
         self._showOrigin(origin)
         self.continueButton.setVisible(on_continue is not None)
         self._syncHandBack()

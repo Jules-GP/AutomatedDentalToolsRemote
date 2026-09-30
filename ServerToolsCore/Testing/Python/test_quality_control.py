@@ -313,16 +313,21 @@ class _Reviewer:
         self.available = True
         self.on_continue = None
 
-    def open_for_review(self, folder, on_continue, rewind=None, origin=None):
+    def open_for_review(self, folder, on_continue, rewind=None, origin=None,
+                        beside=(), registered=False):
         self.rewind = rewind
         self.origin = dict(origin or {})
         self.opened.append(folder)
         self.on_continue = on_continue
+        # What the panel hands over so a result can be drawn against the scans
+        # it was computed from, and whether it said the two share a frame.
+        self.beside = list(beside or ())
+        self.registered = bool(registered)
         return self.available
 
-    def press_continue(self, flagged=(), written=(), folder=None, rewind_to=None):
+    def press_continue(self, replay=(), written=(), folder=None, rewind_to=None):
         self.on_continue({"folder": folder if folder is not None else self.opened[-1],
-                          "flagged": set(flagged), "written": set(written),
+                          "replay": set(replay), "written": set(written),
                           "rewind_to": rewind_to})
 
 
@@ -506,7 +511,7 @@ class PanelTest(unittest.TestCase):
     def test_continue_sends_a_correction_per_step_and_carries_the_run_on(self):
         run, _job = self._stopped()
         self._edit(os.path.join("01_ALI_CBCT", "p1_lm_Pred.mrk.json"))
-        self.reviewer.press_continue(flagged={"p1"}, written={"p1"})
+        self.reviewer.press_continue(replay={"p1"}, written={"p1"})
 
         sent = self._collectResume()
         self.assertEqual(sent["run_id"], "run-1")
@@ -518,7 +523,7 @@ class PanelTest(unittest.TestCase):
         """A step is a cohort's worth of scans. Re-uploading every one of them
         on behalf of somebody who only looked is the expensive half."""
         self._stopped()
-        self.reviewer.press_continue(flagged={"p1"}, written=set())
+        self.reviewer.press_continue(replay={"p1"}, written=set())
 
         self.assertEqual(self._collectResume()["corrections"], {})
 
@@ -555,7 +560,7 @@ class PanelTest(unittest.TestCase):
         """Continue and Go back travel the same route and differ only in the
         direction the run then moves."""
         self._stopped()
-        self.reviewer.press_continue(flagged={"p1"}, rewind_to="01_ALI_CBCT")
+        self.reviewer.press_continue(replay={"p1"}, rewind_to="01_ALI_CBCT")
 
         self.assertEqual(self._collectResume()["rewind_to"], "01_ALI_CBCT")
 
@@ -604,7 +609,7 @@ class PanelTest(unittest.TestCase):
         are what decides, so a step nothing changed contributes no field."""
         self._stopped(members={"p1.mrk.json": "{}", "p2.mrk.json": "{}"})
 
-        self.reviewer.press_continue(flagged={"p1"}, written={"p1"})
+        self.reviewer.press_continue(replay={"p1"}, written={"p1"})
 
         self.assertEqual(self._collectResume()["corrections"], {})
 
@@ -903,7 +908,8 @@ class ReviewModuleTest(unittest.TestCase):
         self.assertEqual(len(entry), 1,
                          "the review module must offer open_for_review()")
         self.assertEqual([arg.arg for arg in entry[0].args.args],
-                         ["folder", "on_continue", "rewind", "origin"],
+                         ["folder", "on_continue", "rewind", "origin",
+                          "beside", "registered"],
                          "the seam is a signature, so a change to it is a "
                          "change to what both modules agree on")
 
@@ -1031,3 +1037,87 @@ class PreviousCorrectableStepTest(unittest.TestCase):
         panel._schema = {}
         self.assertIsNone(
             panel._previousCorrectableStep(types.SimpleNamespace(paused=None)))
+
+
+class AcquisitionHandedToTheReviewerTest(PanelTest):
+    """A checkpoint archive holds what a step PRODUCED and never its inputs.
+
+    So a reader looking at ALI's landmarks had no scan under them, and one
+    looking at a registered scan had nothing to compare it to. The inputs are
+    the clinician's own files, on their own disk, and the panel that sent them
+    is the only thing that knows where they are.
+    """
+
+    def _sent(self, files):
+        """A run whose inputs are these real paths, stopped at a checkpoint."""
+        made = {}
+        for argument, relative in files.items():
+            path = os.path.join(self.work, "sent", relative)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("scan")
+            made[argument] = path
+        self.panel.prepareInputFiles = lambda _workspace, made=made: dict(made)
+        return self._stopped()
+
+    def test_the_folders_the_run_was_given_are_handed_over(self):
+        self._sent({"t1": "T1/p1.nii.gz", "t2": "T2/p1.nii.gz"})
+
+        self.assertEqual(
+            sorted(label for label, _path in self.reviewer.beside), ["t1", "t2"])
+
+    def test_two_arguments_under_one_folder_are_handed_over_once(self):
+        """A cohort a clinician keeps together. Indexed twice, every case is
+        listed twice and the reader steps through a doubled cohort."""
+        self._sent({"t1": "cohort/p1.nii.gz", "t2": "cohort/p2.nii.gz"})
+
+        self.assertEqual(len(self.reviewer.beside), 1)
+
+    def test_a_single_file_is_handed_over_as_its_folder(self):
+        """The reviewer indexes directories, and a clinician who picked one
+        scan still wants to see it."""
+        self._sent({"input": "here/p1.nii.gz"})
+
+        self.assertEqual([label for label, _path in self.reviewer.beside],
+                         ["input"])
+        self.assertTrue(os.path.isdir(self.reviewer.beside[0][1]))
+
+    def test_a_path_that_is_not_there_any_more_is_left_out(self):
+        """A clinician who moved their data between Apply and the pause. Left
+        out rather than handed over: indexing a missing folder is nothing, and
+        the reader still gets the results."""
+        self.panel.prepareInputFiles = lambda _workspace: {
+            "t1": os.path.join(self.work, "gone", "p1.nii.gz")}
+        self._stopped()
+
+        self.assertEqual(self.reviewer.beside, [])
+
+
+class RegistrationDeclarationTest(PanelTest):
+    """Whether two greyscale volumes may share one picture, read off the schema.
+
+    Never guessed: an oriented scan and the one it was made from are also two
+    volumes of one patient, and drawing them together is wrong by a rotation
+    and renders without an error.
+    """
+
+    def test_a_declared_registration_puts_them_in_one_view(self):
+        self.panel._schema = {"arguments": {"stop_after": {
+            "option_kind": {"Registration": "registration"}}}}
+        self._stopped(stopped_after="Registration")
+
+        self.assertTrue(self.reviewer.registered)
+
+    def test_a_look_only_stop_does_not(self):
+        self.panel._schema = {"arguments": {"stop_after": {
+            "option_kind": {"ASO": "view"}}}}
+        self._stopped(stopped_after="ASO")
+
+        self.assertFalse(self.reviewer.registered)
+
+    def test_a_schema_that_says_nothing_does_not(self):
+        """The conservative direction, as everywhere else here."""
+        self.panel._schema = {}
+        self._stopped(stopped_after="Registration")
+
+        self.assertFalse(self.reviewer.registered)
