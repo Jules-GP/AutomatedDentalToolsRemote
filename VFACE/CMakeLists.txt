@@ -2,23 +2,26 @@
 set(MODULE_NAME VFACE)
 
 #-----------------------------------------------------------------------------
+# VFACE_utils/ and Resources/UI/VFACE.ui belonged to the former local module:
+# they built the chain of a dozen processes -- AMASSS, ASO, ALI_CBCT, AREG_CBCT,
+# AutoMatrix -- and stepped through it from inside Slicer, via two pip installs
+# and ten archives downloaded to ~/Documents/SlicerDownloads. The module is now a
+# thin client of the server's "VFACE" tool and builds its panel from GET /tools,
+# so neither is shipped any more. VFACE_utils/ is left in the tree, the same way
+# ASO_Method and ALI_Method were -- see ARCHITECTURE.md.
+#
+# The .ui went further and was DELETED, as ASO's and AREG's were. A resource that
+# is neither listed below nor read by any code still looks like the panel to
+# whoever opens Qt Designer, so editing it is a no-op that reports no error --
+# and one cost a day of looking for a missing UI change on the wrong side of the
+# client/server line. There is nothing here to edit: the panel comes from the
+# schema.
 set(MODULE_PYTHON_SCRIPTS
   ${MODULE_NAME}.py
-  VFACE_utils/__init__.py
-  VFACE_utils/_batch_worker.py
-  VFACE_utils/createlistprocess.py
-  VFACE_utils/functionaq3dc.py
-  VFACE_utils/Group_landmark.py
-  VFACE_utils/Line.py
-  VFACE_utils/Measure.py
-  VFACE_utils/Point.py
-  VFACE_utils/Progress.py
-  VFACE_utils/segmentation_logic.py
   )
 
 set(MODULE_PYTHON_RESOURCES
   Resources/Icons/${MODULE_NAME}.png
-  Resources/UI/${MODULE_NAME}.ui
   )
 
 #-----------------------------------------------------------------------------

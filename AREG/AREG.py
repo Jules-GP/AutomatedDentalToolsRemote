@@ -9,8 +9,16 @@ downloaded to this machine.
 
 Replaces the former local module, which drove the AREG_CBCT / AREG_IOS /
 AREG_IOSCBCT CLIs from inside Slicer and chained them with AMASSS, ASO, ALI and
-CrownSeg by hand. `AREG_Method/` and `Resources/UI/AREG.ui` are left in the tree
-but are no longer wired to this one.
+CrownSeg by hand. `AREG_Method/` is left in the tree but is no longer wired to
+this one.
+
+**There is no `.ui` file here, and that is the design rather than an omission.**
+The panel is built from the server's schema by `ServerToolsCoreLib.formgen`, so a
+field added to the tool server-side appears here with no client release. The
+former module's `Resources/UI/AREG.ui` was kept for a while and then deleted,
+because keeping it invited edits that changed nothing: CMakeLists did not ship
+it and no code read it, so a UI change made there was a silent no-op -- and one
+cost a day of looking for it in the wrong place.
 
 Authors:
 - Nathan Hutin (UoM)
