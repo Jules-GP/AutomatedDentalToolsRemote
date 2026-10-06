@@ -1088,6 +1088,42 @@ class ExampleToolRequestTest(unittest.TestCase):
 
     @mock.patch("requests.Session.post")
     @mock.patch("requests.Session.get")
+    def test_a_batch_of_a_cohort_says_which_batch_it_is(self, mock_get, mock_post):
+        mock_get.return_value = _response(json_data=[self.EXAMPLE_TOOL])
+        mock_post.return_value = _response(content=_zip_bytes(), headers={"Content-Type": "application/zip"})
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as out_dir:
+            self.client.run("example_tool", args=self._args(), files={"input": __file__}, output_dir=out_dir,
+                            batch={"id": "cohort-aaaaaaaa", "index": 2, "total": 5})
+        headers = mock_post.call_args.kwargs["headers"]
+        self.assertEqual(headers["X-Batch-Id"], "cohort-aaaaaaaa")
+        self.assertEqual(headers["X-Batch-Index"], "2")
+        self.assertEqual(headers["X-Batch-Total"], "5")
+
+    @mock.patch("requests.Session.post")
+    @mock.patch("requests.Session.get")
+    def test_a_run_that_is_not_a_batch_sends_no_batch_header(self, mock_get, mock_post):
+        mock_get.return_value = _response(json_data=[self.EXAMPLE_TOOL])
+        mock_post.return_value = _response(content=_zip_bytes(), headers={"Content-Type": "application/zip"})
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as out_dir:
+            self.client.run("example_tool", args=self._args(), files={"input": __file__}, output_dir=out_dir)
+        headers = mock_post.call_args.kwargs["headers"]
+        self.assertFalse([name for name in headers if name.startswith("X-Batch-")])
+
+    @mock.patch("requests.Session.get")
+    def test_the_batch_policy_is_read_and_an_older_server_answers_none(self, mock_get):
+        mock_get.return_value = _response(json_data={"batches": "parallel", "max_parallel": 4})
+        self.assertEqual(self.client.batch_policy(), {"batches": "parallel", "max_parallel": 4})
+        mock_get.return_value = _response(status_code=404, json_data={"detail": "Not Found"})
+        self.assertIsNone(self.client.batch_policy())
+        mock_get.side_effect = requests.ConnectionError("down")
+        self.assertIsNone(self.client.batch_policy())
+
+    @mock.patch("requests.Session.post")
+    @mock.patch("requests.Session.get")
     def test_a_zipped_folder_is_uploaded_under_the_same_argument_name(self, mock_get, mock_post):
         # The client zips a folder selection before sending; the server sees an
         # ordinary .zip under "input" and unpacks it.

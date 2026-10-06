@@ -25,11 +25,13 @@ import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
+from urllib.parse import urlsplit
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from ServerToolsCoreLib import client as client_module
-from ServerToolsCoreLib.client import ToolServerClient, new_run_id, normalise_run_event
+from ServerToolsCoreLib.client import (ToolServerClient, is_log_event, new_run_id,
+                                      normalise_run_event)
 from ServerToolsCoreLib.errors import RunCancelled, ServerToolError
 
 _TOOL = "Probe"
@@ -39,6 +41,16 @@ _SCHEMA = [{"name": _TOOL, "arguments": {}, "output_kind": "text"}]
 def _event(seq, **fields):
     payload = {"seq": seq, "at": 1757400000.0, "state": "running",
                "phase": "running", "fraction": None, "message": "", "depth": 0}
+    payload.update(fields)
+    return payload
+
+
+def _log(seq, **fields):
+    """A log line as the server sends it: a running tool's state and phase
+    riding along, and no fraction at all."""
+    payload = {"seq": seq, "at": 1757400000.0, "kind": "log", "state": "running",
+               "phase": "running", "level": "info", "audience": "user",
+               "message": "", "depth": 0}
     payload.update(fields)
     return payload
 
@@ -54,6 +66,7 @@ class _State:
         self.deleted = []               # every id DELETE /runs/{id} was given
         self.events_404_left = 0        # answer 404 this many times first
         self.events_requests = 0
+        self.events_paths = []          # every path the events stream was asked on
         self.close_after = None         # cut the FIRST stream after N events
         self.post_status = 200
         # Set by a test to hold the run's answer back until something else has
@@ -119,11 +132,14 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/tools":
             return self._json(_SCHEMA)
-        if not self.path.endswith("/events"):
+        # The path alone: the watcher asks for `?logs=user`, and a server
+        # that has no log lines ignores the query rather than 404ing on it.
+        if not urlsplit(self.path).path.endswith("/events"):
             return self._json({"detail": "not found"}, status=404)
 
         with self.state.lock:
             self.state.events_requests += 1
+            self.state.events_paths.append(self.path)
             if self.state.events_404_left > 0:
                 self.state.events_404_left -= 1
                 return self._json({"detail": "unknown run"}, status=404)
@@ -236,7 +252,117 @@ class EventShapeTest(unittest.TestCase):
         self.assertEqual(normalise_run_event(_event(1, depth=-3))["depth"], 0)
 
 
+class LogEventShapeTest(unittest.TestCase):
+    """A tool's log line: renderable, and impossible to mistake for progress."""
+
+    def test_a_log_line_is_its_own_kind_and_carries_nothing_of_progress(self):
+        event = normalise_run_event(_log(7, level="warning", message="scan 4 skipped",
+                                         depth=1, source="ALI_CBCT"))
+        self.assertTrue(is_log_event(event))
+        self.assertEqual(event["seq"], 7)
+        self.assertEqual(event["level"], "warning")
+        self.assertEqual(event["message"], "scan 4 skipped")
+        self.assertEqual(event["depth"], 1)
+        self.assertEqual(event["source"], "ALI_CBCT")
+        # Left out on purpose, so no reader of progress can read one here.
+        for key in ("state", "phase", "fraction"):
+            self.assertNotIn(key, event)
+
+    def test_a_progress_event_is_not_a_log_line(self):
+        self.assertFalse(is_log_event(normalise_run_event(_event(1))))
+
+    def test_the_four_levels_survive_and_anything_else_reads_as_info(self):
+        for level in ("debug", "info", "warning", "error"):
+            self.assertEqual(normalise_run_event(_log(1, level=level))["level"], level)
+        self.assertEqual(normalise_run_event(_log(1, level="WARNING"))["level"], "warning")
+        for level in ("critical", "", None, 3, "<b>error</b>"):
+            self.assertEqual(normalise_run_event(_log(1, level=level))["level"], "info")
+
+    def test_a_log_message_is_truncated_like_a_progress_one(self):
+        event = normalise_run_event(_log(1, message="x" * 5000))
+        self.assertEqual(len(event["message"]), 200)
+
+    def test_a_source_that_is_not_a_tool_name_is_dropped(self):
+        """It is drawn next to a clinician's data; an identifier is the one
+        shape that cannot carry a file name or a sentence."""
+        for source in ("../etc/passwd", "scan_01.nii.gz", "two words", "x" * 65,
+                       "", 12, None, ["ALI"]):
+            self.assertNotIn("source", normalise_run_event(_log(1, source=source)), source)
+        self.assertEqual(normalise_run_event(_log(1, source="AREG-v2"))["source"], "AREG-v2")
+
+    def test_an_unusable_time_is_unknown_rather_than_wrong(self):
+        for at in ("yesterday", -1, float("nan"), float("inf"), True, None):
+            self.assertIsNone(normalise_run_event(_log(1, at=at))["at"], at)
+
+    def test_a_log_line_without_a_usable_seq_is_not_an_event(self):
+        self.assertIsNone(normalise_run_event(_log(None)))
+
+
+class NestedProgressShapeTest(unittest.TestCase):
+    """The optional fields a weighted chain adds to a progress event."""
+
+    def test_own_fraction_tool_edge_and_call_are_kept_when_well_formed(self):
+        event = normalise_run_event(_event(3, fraction=0.4, own_fraction=0.8, tool="ALI_CBCT",
+                                           edge="open", call="1.2", depth=2))
+        self.assertEqual(event["fraction"], 0.4)
+        self.assertEqual(event["own_fraction"], 0.8)
+        self.assertEqual(event["tool"], "ALI_CBCT")
+        self.assertEqual(event["edge"], "open")
+        self.assertEqual(event["call"], "1.2")
+
+    def test_malformed_ones_are_dropped_and_the_event_still_arrives(self):
+        event = normalise_run_event(_event(3, own_fraction=1.5, tool="a/b", edge="sideways",
+                                           call="1;rm"))
+        self.assertIsNotNone(event)
+        for key in ("own_fraction", "tool", "edge", "call"):
+            self.assertNotIn(key, event)
+
+    def test_an_older_server_s_event_gains_nothing(self):
+        event = normalise_run_event(_event(3, fraction=0.4))
+        for key in ("own_fraction", "tool", "edge", "call", "kind"):
+            self.assertNotIn(key, event)
+
+
 class WatchRunTest(_LiveServerTest):
+    def test_the_stream_is_asked_for_the_user_s_log_lines(self):
+        """`?logs=user`, on every connection: an older server ignores it, and
+        a newer one sends no log line without it."""
+        self.state.events = [_event(0, state="done", phase="done")]
+
+        self._watch()
+
+        self.assertTrue(self.state.events_paths)
+        for path in self.state.events_paths:
+            self.assertTrue(path.endswith("/events?logs=user"), path)
+
+    def test_a_log_line_never_ends_the_watch_whatever_state_it_claims(self):
+        """Only progress can be terminal. A log line claiming `done` is still a
+        line, and the run it belongs to is still going."""
+        self.state.events = [_event(0), _log(1, state="done", phase="done", message="noise"),
+                             _event(2, fraction=0.5), _event(3, state="done", phase="done")]
+
+        delivered, received = self._watch()
+
+        self.assertTrue(delivered)
+        self.assertEqual([event["seq"] for event in received], [0, 1, 2, 3])
+        self.assertTrue(is_log_event(received[1]))
+        self.assertEqual(received[-1]["state"], "done")
+
+    def test_one_seq_dedupes_log_lines_and_progress_alike(self):
+        """They share the run's numbering, so a reconnect's replay re-announces
+        neither a progress event nor a warning the reader has already seen."""
+        self.state.events = [_event(0), _log(1, level="warning", message="scan 4 skipped"),
+                             _event(2), _log(3), _event(4, state="done", phase="done")]
+        self.state.close_after = 2  # the first connection dies after the warning
+
+        with mock.patch.object(client_module, "_RUN_EVENTS_RETRY_SECONDS", 0.01):
+            delivered, received = self._watch()
+
+        self.assertTrue(delivered)
+        self.assertEqual([event["seq"] for event in received], [0, 1, 2, 3, 4])
+        self.assertGreaterEqual(self.state.events_requests, 2)
+
+
     def test_events_arrive_in_order_and_the_stream_ends_on_a_terminal_one(self):
         self.state.events = [_event(0, phase="received"), _event(1, phase="running"),
                              _event(2, state="done", phase="done")]

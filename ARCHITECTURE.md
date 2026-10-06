@@ -450,7 +450,7 @@ requirement rather than a nicety.
   and `cancel_event` is a `threading.Event` the caller sets to withdraw the
   run.
 - `watch_run(run_id, on_event, stop_event=None)` → bool. Consumes
-  `GET /runs/{id}/events` (Server-Sent Events), parses each `data:` frame into
+  `GET /runs/{id}/events?logs=user` (Server-Sent Events), parses each `data:` frame into
   the contract's event dict, and delivers them deduplicated and ordered on
   `seq`. Returns whether anything was delivered — `False` is how a caller
   learns it is talking to a server that predates all of this.
@@ -488,6 +488,26 @@ with a usable `seq`, a `fraction` that is `None` or really within `0..1`, a
 non-negative `depth` and a message truncated to 200 characters, or it does not
 arrive at all. The server truncates the message too; trusting that alone would
 leave one forgetful server able to push a megabyte of text into a `QLabel`.
+The optional fields of a weighted chain are kept only when well formed:
+`own_fraction` (a number in `0..1`; `fraction` is already the whole run's
+position and stays what the bar draws), `tool` and `edge` on a nested call's
+markers, and `call`. A `tool` is held to `[A-Za-z0-9_-]{1,64}` here as it is on
+the server: a name is all the panel needs, and an identifier cannot carry a
+file name.
+
+**The tool's own log lines ride the same stream.** `watch_run` asks for
+`/runs/{id}/events?logs=user` on every connection; a server that predates log
+lines ignores the query and sends none, and one that has them sends none
+without it, so asking is always harmless. A line arrives as `"kind": "log"`
+and `normalise_run_event` gives it a shape of its own -- `seq`, `at`, `kind`,
+`level` (one of `debug`/`info`/`warning`/`error`, anything else read as
+`info`), `message` (200 characters), `depth` and an optional `source` held to
+the same identifier rule -- with **no** `state`, `phase` or `fraction`, so
+nothing downstream can read it as progress by accident. `is_log_event` is the
+test every consumer makes first. The two kinds share the run's `seq`, so the
+one dedupe covers both, and a log line never ends a watcher whatever state a
+server put on it -- only progress can be terminal, on the blocking path and on
+a detached run's `_await_terminal` alike.
 
 **`499` is a cancellation, not a failure.** `errors.RunCancelled` is a class of
 its own — that is the whole reason the contract borrowed a non-standard status
@@ -1523,10 +1543,25 @@ are told apart now, and the mechanism is one connection and no new machinery.
   and may name a file, which on this extension's data means it may name a
   patient. It is rendered on the panel of the person who started the run and
   goes nowhere else.
+- **A log line is printed to the Python console, and nothing else.**
+  `_onJobProgress` routes `is_log_event` payloads to `_onRunLog` BEFORE the
+  progress branch, so a line never touches the run's phase, message, fraction
+  or depth -- and therefore never the bar, the progress line or a cohort's
+  count. There is no widget for it: the line is `print`ed as
+  `[<TOOL_NAME>] HH:MM:SS  [source]  LEVEL  message` (`format_run_log_line`),
+  the panel's tool first since every panel prints to the same console. With
+  several runs in flight it is prefixed with the run it came from, named as
+  its progress line names it ("Run 2:", or "Batch 2:" inside a cohort). It
+  never goes through Python's `logging`, which would also write it to
+  Slicer's log file.
 
-A supervised chain (AREG → ASO → ALI) arrives as a `depth` and nothing more, so
-the line shows nesting as nesting: the contract does not carry the child's name,
-and naming it would be guessing which tool is running.
+A supervised chain (AREG → ASO → ALI) is shown as nesting: one arrow per
+`depth`. The child is named only when the server named it -- the marker that
+opens a nested call carries the callee's `tool` and its `call` id, every
+record written inside that call carries the same id, and `_onRunEvent` keeps
+`{call: tool}` on the run so the line reads `→ ALI_CBCT: Running on the server
+— scan 2 of 8 — 40%`. An older server sends no name, and the arrows alone are
+what it gets: guessing which tool of a chain is running would be worse.
 
 **A run that ends in a `499` closes quietly.** `_onJobError` answers
 `RunCancelled` with a status-bar line and no error dialog — the user asked for

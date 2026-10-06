@@ -18,9 +18,12 @@ than copying 120 lines of stubs keeps one definition of what Slicer looks like;
 its own test classes stay in its namespace and are not re-run here.
 """
 
+import contextlib
+import io
 import os
 import sys
 import threading
+import time
 import unittest
 
 _HERE = os.path.abspath(os.path.dirname(__file__))
@@ -45,6 +48,7 @@ if not hasattr(_slicer_util, "tryWithErrorDisplay"):
 
 from ServerToolsCoreLib import base_widget, config  # noqa: E402
 from ServerToolsCoreLib.base_widget import ServerToolWidgetBase  # noqa: E402
+from ServerToolsCoreLib.client import normalise_run_event  # noqa: E402
 from ServerToolsCoreLib.errors import RunCancelled, ServerToolError  # noqa: E402
 
 qt = sys.modules["qt"]
@@ -89,6 +93,15 @@ class _Job:
                    "fraction": None, "message": "", "depth": 0}
         payload.update(event)
         self.on_progress(payload)
+
+    def log(self, **fields):
+        """One of the tool's log lines, normalised by the real client as the
+        watcher would, and sent down the same channel as progress."""
+        payload = {"seq": 0, "at": 1757400000.0, "kind": "log", "state": "running",
+                   "phase": "running", "level": "info", "audience": "user",
+                   "message": "", "depth": 0}
+        payload.update(fields)
+        self.on_progress(normalise_run_event(payload))
 
     def succeed(self, result="done"):
         self.on_success(result)
@@ -151,7 +164,6 @@ class RunQueueTest(unittest.TestCase):
         panel.applyButton = qt.QPushButton("Apply")
         panel.cancelButton = qt.QPushButton("Cancel")
         panel.client = self
-
         # Every run id the panel asked the server to cancel, in order. The
         # point of recording them is the runs that must NOT appear: a queued
         # run has never been sent, so cancelling it makes no HTTP call at all.
@@ -503,8 +515,8 @@ class RunQueueTest(unittest.TestCase):
         self.assertIn("uploading_to_pacs", self.phases[-1])
 
     def test_a_supervised_chain_reads_as_one(self):
-        """AREG drives ASO drives ALI. Depth is all the contract carries -- the
-        child's NAME is not in it -- so nesting is shown as nesting."""
+        """AREG drives ASO drives ALI. An older server sends the depth and
+        nothing else -- no child's NAME -- so nesting is shown as nesting."""
         self._apply()
         _Job.started[0].emit(phase="running", depth=2, message="orienting")
 
@@ -531,6 +543,99 @@ class RunQueueTest(unittest.TestCase):
 
         _Job.started[0].emit(seq=1, fraction=None)
         self.assertFalse(self.panel._progressBar.isVisible())
+
+    # -- a tool's log lines, apart from its progress --------------------
+
+    def test_a_log_line_between_two_progress_events_changes_nothing(self):
+        """A log line is never progress. Between two progress events it must
+        leave the run's phase, message, fraction and depth exactly where the
+        first one put them -- and so the bar, the line and a cohort's count."""
+        self.panel._progressBar = qt.QProgressBar()
+        self._apply()
+        job = _Job.started[0]
+        run = self.panel._runs[0]
+
+        job.emit(seq=0, phase="running", fraction=0.4, message="scan 2 of 5")
+        before = (run.server_phase, run.server_message, run.fraction, run.depth,
+                  self.panel._progressBar.value, self.phases[-1])
+
+        job.log(seq=1, level="warning", message="scan 2 has no mandible", depth=2,
+                state="done", phase="done", fraction=0.99)
+
+        self.assertEqual((run.server_phase, run.server_message, run.fraction, run.depth,
+                          self.panel._progressBar.value, self.phases[-1]), before)
+        self.assertTrue(run.running, "a log line claiming `done` ended nothing")
+
+        job.emit(seq=2, phase="running", fraction=0.6, message="scan 3 of 5")
+        self.assertEqual(run.fraction, 0.6)
+        self.assertEqual(run.server_message, "scan 3 of 5")
+
+    def test_a_log_line_does_not_move_a_cohort_s_bar(self):
+        cohort = base_widget._Cohort(2, total_scans=10)
+        self._apply()
+        run = self.panel._runs[0]
+        run.cohort, run.scan_count = cohort, 5
+        _Job.started[0].emit(fraction=0.4)
+        progress = cohort.progress([run])
+
+        _Job.started[0].log(seq=1, message="nothing to see")
+
+        self.assertEqual(cohort.progress([run]), progress)
+
+    def _printed(self, act):
+        """What `act` printed to the console, line by line."""
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            act()
+        return out.getvalue().splitlines()
+
+    def test_a_log_line_is_printed_to_the_console_with_its_tool(self):
+        self._apply()
+
+        (line,) = self._printed(lambda: _Job.started[0].log(
+            level="warning", message="scan 4 skipped", source="ALI_CBCT"))
+
+        self.assertTrue(line.startswith("[{}] ".format(self.panel.TOOL_NAME)), line)
+        self.assertIn("[ALI_CBCT]", line)
+        self.assertIn("WARNING", line)
+        self.assertIn("scan 4 skipped", line)
+        self.assertNotIn("Run 1", line, "a lone run gains no prefix")
+
+    def test_progress_is_never_printed(self):
+        self._apply()
+        self.assertEqual(self._printed(
+            lambda: _Job.started[0].emit(seq=1, message="scan 5 of 8")), [])
+
+    def test_several_runs_prefix_their_lines_with_the_run_they_came_from(self):
+        config.CONCURRENT_RUNS = 2
+        self._apply(path="/data/patient_01.nii.gz")
+        self._apply(path="/data/patient_02.nii.gz")
+
+        (line,) = self._printed(lambda: _Job.started[1].log(message="from the second"))
+
+        self.assertIn("Run 2:", line)
+
+    def test_nothing_a_tool_says_is_ever_logged(self):
+        """The line was written about a clinician's data. It is printed to the
+        console and goes nowhere else -- never through `logging`, which would
+        also put it in Slicer's log file."""
+        self._apply()
+        with self.assertNoLogs(level="DEBUG"):
+            _Job.started[0].log(level="error", message="scan 4 failed")
+            _Job.started[0].emit(seq=1, message="scan 5 of 8")
+
+    def test_a_nested_call_is_named_when_the_server_named_it(self):
+        self._apply()
+        job = _Job.started[0]
+        job.emit(seq=0, depth=1, call="1", tool="ALI_CBCT", edge="open")
+        job.emit(seq=1, depth=1, call="1", message="scan 2 of 8")
+
+        line = self.phases[-1]
+        self.assertIn("\u2192 ALI_CBCT: ", line)
+        self.assertIn("scan 2 of 8", line)
+
+        job.emit(seq=2, depth=0, message="merging")
+        self.assertNotIn("ALI_CBCT", self.phases[-1])
 
     # -- cancelling, and who hears about it ----------------------------
 
@@ -648,6 +753,34 @@ class RunQueueTest(unittest.TestCase):
 
         self.assertIsNot(self.panel._runControlsWidget, stale)
         self.assertTrue(stale.deleted, "the old buttons were left in the layout")
+
+
+class LogLineFormatTest(unittest.TestCase):
+    """`HH:MM:SS  [source]  LEVEL  message`, the console's one line shape."""
+
+    def setUp(self):
+        self.at = time.mktime((2026, 10, 6, 14, 3, 9, 0, 0, -1))
+
+    def test_time_source_level_and_message_in_that_order(self):
+        line = base_widget.format_run_log_line(
+            {"at": self.at, "level": "warning", "source": "ALI_CBCT",
+             "message": "scan 4 skipped"})
+        self.assertEqual(line, "14:03:09  [ALI_CBCT]  WARNING  scan 4 skipped")
+
+    def test_the_tool_that_was_asked_for_is_not_named_again(self):
+        line = base_widget.format_run_log_line(
+            {"at": self.at, "level": "info", "message": "done"})
+        self.assertEqual(line, "14:03:09  INFO     done")
+
+    def test_a_prefix_names_the_run(self):
+        line = base_widget.format_run_log_line(
+            {"at": self.at, "level": "error", "message": "x"}, prefix="Run 2")
+        self.assertTrue(line.startswith("Run 2:  14:03:09  ERROR  "), line)
+
+    def test_without_a_server_time_the_arrival_is_used(self):
+        line = base_widget.format_run_log_line(
+            {"at": None, "level": "info", "message": "x"}, now=self.at)
+        self.assertTrue(line.startswith("14:03:09"), line)
 
 
 class OneJobPerToolTest(unittest.TestCase):

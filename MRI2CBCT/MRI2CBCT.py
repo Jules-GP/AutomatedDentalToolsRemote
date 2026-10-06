@@ -144,21 +144,29 @@ class MRI2CBCT(ScriptedLoadableModule):
 
     def __init__(self, parent):
         ScriptedLoadableModule.__init__(self, parent)
-        self.parent.title = _("MRI2CBCT")  # TODO: make this more human readable by adding spaces
-        # TODO: set categories (folders where the module shows up in the module selector)
+        self.parent.title = _("MRI2CBCT")
         self.parent.categories = ["Automated Dental Tools"]
-        self.parent.dependencies = ["SlicerNNUNet"]  # TODO: add here list of module names that this module requires
-        self.parent.contributors = ["John Doe (AnyWare Corp.)"]  # TODO: replace with "Firstname Lastname (Organization)"
-        # TODO: update with short description of the module and a link to online module documentation
-        # _() function marks text as translatable to other languages
+        # No extension dependency: this module pip-installs the nnU-Net it needs
+        # itself (see install_nnunet) and never calls the SlicerNNUNet extension.
+        # Declaring it made the module fail to load wherever it was absent.
+        self.parent.dependencies = []
+        self.parent.contributors = [
+            "Jeanne Claret (University of Michigan)",
+            "Lucia Cevidanes (University of North Carolina)",
+            "Juan Carlos Prieto (University of North Carolina)",
+        ]
         self.parent.helpText = _("""
-This is an example of scripted loadable module bundled in an extension.
-See more information in <a href="https://github.com/organization/projectname#MRI2CBCT">module documentation</a>.
+Registration of magnetic resonance images onto cone-beam computed tomography
+scans of the temporomandibular joint. See the
+<a href="https://github.com/DCBIA-OrthoLab/SlicerAutomatedDentalToolsRemote#mri2cbct-module">module documentation</a>.
+
+Unlike the other modules of this extension, MRI2CBCT still computes locally: it
+installs nnU-Net into Slicer's interpreter and downloads its model on first use.
 """)
-        # TODO: replace with organization, grant and thanks
         self.parent.acknowledgementText = _("""
-This file was originally developed by Jean-Christophe Fillion-Robin, Kitware Inc., Andras Lasso, PerkLab,
-and Steve Pieper, Isomics, Inc. and was partially funded by NIH grant 3P41RR013218-12S1.
+Supported by NIDCR R01DE 024450, the AA0F Grabber Family Teaching and Research
+Award, and Research Enhancement Award Activity 141 from the University of the
+Pacific, Arthur A. Dugoni School of Dentistry.
 """)
 
         # Additional initialization step after application startup is complete

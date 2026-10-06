@@ -25,6 +25,7 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
+from urllib.parse import urlsplit
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
@@ -105,7 +106,9 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/tools":
             return self._json(_SCHEMA)
-        if not self.path.endswith("/events"):
+        # The path alone: the watcher asks for `?logs=user`, and a server
+        # that has no log lines ignores the query rather than 404ing on it.
+        if not urlsplit(self.path).path.endswith("/events"):
             return self._json({"detail": "not found"}, status=404)
         with self.state.lock:
             self.state.streams += 1
@@ -240,6 +243,21 @@ class CollectTest(_Live):
         seen = []
         self._client().run(_TOOL, run_id=new_run_id(), event_cb=seen.append)
         self.assertEqual([e["message"] for e in seen], ["one of four", ""])
+
+    def test_a_log_line_reaches_the_caller_and_is_never_taken_for_the_end(self):
+        """A detached run is collected from the terminal event it waits for. A
+        log line claiming `done` must neither be that event nor stop the wait
+        before the real one arrives with the answer on it."""
+        self.state.events = [
+            {"seq": 1, "at": 1757400000.0, "kind": "log", "state": "done",
+             "phase": "done", "level": "warning", "message": "scan 4 skipped",
+             "depth": 0},
+            _terminal(2, result={"result": "finished"}),
+        ]
+        seen = []
+        result = self._client().run(_TOOL, run_id=new_run_id(), event_cb=seen.append)
+        self.assertEqual(result.text, "finished")
+        self.assertEqual([e.get("kind") for e in seen], ["log", None])
 
 
 # ----------------------------------------------------------------------

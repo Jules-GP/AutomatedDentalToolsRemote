@@ -13,6 +13,7 @@ and what they mean stays here; that module only moves them.
 
 import json
 import logging
+import math
 import mimetypes
 import os
 import secrets
@@ -96,6 +97,13 @@ STOP_AFTER_ARGUMENT = "stop_after"
 # known to BOTH sides before the response exists, since the whole point is to
 # say something while the request is still in flight.
 RUN_ID_HEADER = "X-Run-Id"
+# A run that is one batch of a divided cohort says which, so the server can
+# group the batches and decide whether they run side by side. Headers for the
+# same reason the run id is one: a server that has never heard of them ignores
+# them and answers exactly as before.
+BATCH_ID_HEADER = "X-Batch-Id"
+BATCH_INDEX_HEADER = "X-Batch-Index"
+BATCH_TOTAL_HEADER = "X-Batch-Total"
 
 # The closed set of terminal states. Reaching one ends the stream, on both
 # sides: the server stops writing, and the watcher stops reading rather than
@@ -107,6 +115,30 @@ TERMINAL_RUN_STATES = ("done", "failed", "cancelled")
 # straight onto a panel, and a server that forgot its own cap must not be able
 # to push a megabyte of it into a QLabel.
 _RUN_MESSAGE_MAX_LEN = 200
+
+# A log line is an event of its own kind (`"kind": "log"`), interleaved in the
+# same stream and numbered on the same `seq`, and it is NEVER progress: it
+# carries no fraction and says nothing about where the run is. The server sends
+# them only to a watcher that asked with `?logs=user`, and an older server
+# ignores the parameter and simply sends none -- which is what makes it safe to
+# ask every time.
+RUN_LOG_KIND = "log"
+_RUN_LOGS_QUERY = {"logs": "user"}
+
+# The contract's four levels. Anything else a server or a tool sends reads as
+# "info": a level is only ever used to pick a colour, so an unknown one must
+# degrade to the plain line rather than to no line at all.
+RUN_LOG_LEVELS = ("debug", "info", "warning", "error")
+
+# A tool name as the server publishes one (`source` on a log line, `tool` on a
+# nested call's marker). Held to an identifier on this side too, because it is
+# drawn on the panel next to a clinician's data: a name is the one fact the
+# drawing needs, and an identifier cannot carry a file name or a sentence.
+_RUN_TOOL_NAME_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+# Which supervised call wrote a record ("1", "1.2"). Only ever used as a key
+# that ties a nested call's records to the tool its opening marker named.
+_RUN_CALL_RE = re.compile(r"[0-9]{1,6}(?:\.[0-9]{1,6}){0,15}")
 
 # Read timeout on the event stream. Long on purpose: the contract has no
 # heartbeat, so a server that is simply busy inferring sends NOTHING between
@@ -214,11 +246,14 @@ def _sse_data_frames(lines):
 def normalise_run_event(payload) -> Optional[dict]:
     """One event of the contract, with every field made safe to render.
 
-    Returns None for anything that is not a usable event. The panel that shows
-    these must not have to ask whether `fraction` came back as the string
-    "0.35", whether `depth` is negative, or whether `message` is a novel: an
-    event either arrives here in the shape the UI expects, or it does not
-    arrive at all.
+    Returns None for anything that is not a usable event. A tool's log line
+    (`"kind": "log"`) comes back in a shape of its own -- see
+    _normalise_log_event and is_log_event -- and never as progress.
+
+    The panel that shows these must not have to ask whether `fraction` came
+    back as the string "0.35", whether `depth` is negative, or whether
+    `message` is a novel: an event either arrives here in the shape the UI
+    expects, or it does not arrive at all.
     """
     if not isinstance(payload, dict):
         return None
@@ -229,6 +264,9 @@ def normalise_run_event(payload) -> Optional[dict]:
         # a usable one cannot be placed and is not an event.
         return None
 
+    if payload.get("kind") == RUN_LOG_KIND:
+        return _normalise_log_event(payload, seq)
+
     fraction = payload.get("fraction")
     if isinstance(fraction, bool) or not isinstance(fraction, (int, float)):
         # Never fabricated, on either side: unknown stays unknown, and a
@@ -237,14 +275,7 @@ def normalise_run_event(payload) -> Optional[dict]:
     else:
         fraction = min(1.0, max(0.0, float(fraction)))
 
-    try:
-        depth = max(0, int(payload.get("depth") or 0))
-    except (TypeError, ValueError):
-        depth = 0
-
-    message = payload.get("message") or ""
-    if not isinstance(message, str):
-        message = str(message)
+    depth = _event_depth(payload)
 
     event = {
         "seq": seq,
@@ -252,9 +283,28 @@ def normalise_run_event(payload) -> Optional[dict]:
         "state": payload.get("state") or "",
         "phase": payload.get("phase") or "",
         "fraction": fraction,
-        "message": message[:_RUN_MESSAGE_MAX_LEN],
+        "message": _event_message(payload),
         "depth": depth,
     }
+    # Optional, and absent from every server that predates weighted chains.
+    # `fraction` is what the bar draws -- when a parent weighted its nested
+    # calls the server has already folded it into the WHOLE run's position --
+    # and `own_fraction` is what the record itself said on its own tool's
+    # 0..1. Kept only when it is really a number in range, like `fraction`.
+    own = payload.get("own_fraction")
+    if not isinstance(own, bool) and isinstance(own, (int, float)) and 0.0 <= own <= 1.0:
+        event["own_fraction"] = float(own)
+    # A nested call's opening and closing markers name the callee. `call` ties
+    # the records written inside that call back to the name, which is what
+    # lets a panel say WHICH tool of a chain is talking.
+    tool = _run_tool_name(payload.get("tool"))
+    if tool:
+        event["tool"] = tool
+        if payload.get("edge") in ("open", "close"):
+            event["edge"] = payload["edge"]
+    call = _run_call_id(payload.get("call"))
+    if call:
+        event["call"] = call
     # Only on a detached run's terminal event, and it is how the answer gets
     # back at all: the response that used to carry it was a 202, sent before
     # the tool had started. Kept exactly as the server sent it -- this side
@@ -262,6 +312,72 @@ def normalise_run_event(payload) -> Optional[dict]:
     if isinstance(payload.get("result"), dict):
         event["result"] = payload["result"]
     return event
+
+
+def is_log_event(event) -> bool:
+    """Whether a normalised event is a tool's log line rather than progress.
+
+    The one test every consumer makes before reading an event as progress: a
+    log line must never overwrite a run's phase, message or fraction, never end
+    a watcher, and never move a cohort's bar.
+    """
+    return isinstance(event, dict) and event.get("kind") == RUN_LOG_KIND
+
+
+def _normalise_log_event(payload: dict, seq: int) -> dict:
+    """A log line, in a shape of its own that no progress reader can mistake.
+
+    Deliberately WITHOUT `state`, `phase` and `fraction`: the server sends a
+    log line with a running tool's state so that an older reader takes it as
+    harmless, but on this side the line is not progress at all, and leaving
+    those keys out means nothing downstream can read it as such by accident.
+    """
+    level = str(payload.get("level") or "").lower()
+    at = payload.get("at")
+    if (isinstance(at, bool) or not isinstance(at, (int, float))
+            or not math.isfinite(at) or at <= 0):
+        # Only ever used to print a time of day, so an unusable one is simply
+        # "unknown" and the panel stamps the line when it arrives.
+        at = None
+    event = {
+        "seq": seq,
+        "at": float(at) if at is not None else None,
+        "kind": RUN_LOG_KIND,
+        "level": level if level in RUN_LOG_LEVELS else "info",
+        "message": _event_message(payload),
+        "depth": _event_depth(payload),
+    }
+    source = _run_tool_name(payload.get("source"))
+    if source:
+        event["source"] = source
+    return event
+
+
+def _event_depth(payload: dict) -> int:
+    try:
+        return max(0, int(payload.get("depth") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _event_message(payload: dict) -> str:
+    message = payload.get("message") or ""
+    if not isinstance(message, str):
+        message = str(message)
+    return message[:_RUN_MESSAGE_MAX_LEN]
+
+
+def _run_tool_name(value) -> Optional[str]:
+    """A tool name, or None for anything that is not strictly one."""
+    if isinstance(value, str) and _RUN_TOOL_NAME_RE.fullmatch(value):
+        return value
+    return None
+
+
+def _run_call_id(value) -> Optional[str]:
+    if isinstance(value, str) and _RUN_CALL_RE.fullmatch(value):
+        return value
+    return None
 
 
 def _download_message(received: int, expected: Optional[int], label: str = "results") -> str:
@@ -619,6 +735,27 @@ class ToolServerClient:
             logger.debug("Health check failed: %s", exc)
             return False
 
+    def batch_policy(self) -> Optional[dict]:
+        """How the server will run this workstation's cohort batches, or None.
+
+        `{"batches": "serial" | "parallel", "max_parallel": N}`, decided per
+        workstation by the server's operator. None from a server that predates
+        the endpoint, or that cannot be reached: the caller then keeps its own
+        configured concurrency, which is what it did before.
+        """
+        try:
+            response = self._session.get(
+                f"{self._server_url}/clients/me", headers={"Authorization": f"Bearer {self._token}"},
+                timeout=_HEALTH_CHECK_TIMEOUT, verify=self._verify_tls,
+            )
+            if not response.ok:
+                return None
+            answer = response.json()
+            return answer if isinstance(answer, dict) else None
+        except (requests.RequestException, ValueError) as exc:
+            logger.debug("Batch policy unavailable: %s", exc)
+            return None
+
     def list_tools(self, force_refresh: bool = False) -> dict:
         """Return {tool_name: schema}, cached after the first call."""
         if self._tools_cache is None or force_refresh:
@@ -857,6 +994,7 @@ class ToolServerClient:
         run_id: Optional[str] = None,
         event_cb: Optional[Callable[[dict], None]] = None,
         cancel_event=None,
+        batch: Optional[dict] = None,
     ) -> ToolResult:
         """`files`: {schema_argument_name: local_file_path}, one entry per
         `type: "file"` argument you're providing. Each is uploaded as its own
@@ -939,6 +1077,11 @@ class ToolServerClient:
             # addresses, and a caller may well want to be able to cancel a run
             # it is not watching.
             post_headers[RUN_ID_HEADER] = run_id
+        if batch:
+            # `{"id", "index", "total"}`: which batch of which cohort this is.
+            post_headers[BATCH_ID_HEADER] = str(batch["id"])
+            post_headers[BATCH_INDEX_HEADER] = str(batch["index"])
+            post_headers[BATCH_TOTAL_HEADER] = str(batch["total"])
 
         # Debug visibility only: argument/file *names*, never the token or the
         # argument/file contents. Silent unless the caller has raised this
@@ -1157,6 +1300,11 @@ class ToolServerClient:
                 response = self._session.get(
                     url,
                     headers=headers,
+                    # The tool's log lines for the requester, interleaved as
+                    # `"kind": "log"` events on the same `seq`. Asked for every
+                    # time: an older server ignores the parameter and sends
+                    # none, and a server that has them sends none without it.
+                    params=_RUN_LOGS_QUERY,
                     stream=True,
                     # (connect, read). The read half is long on purpose: the
                     # contract has no heartbeat, so silence is the normal state
@@ -1203,12 +1351,18 @@ class ToolServerClient:
                             # message is written by a tool and may name a file.
                             logger.debug("Unreadable run event frame, skipped")
                             continue
+                        # One dedupe for both kinds: a log line and a progress
+                        # event share the run's `seq`, so a reconnect's replay
+                        # re-announces neither.
                         if event is None or event["seq"] <= delivered_seq:
                             continue
                         delivered_seq = event["seq"]
                         delivered_any = True
                         on_event(event)
-                        if event["state"] in TERMINAL_RUN_STATES:
+                        # A log line never ends the watch, whatever state a
+                        # server put on it: only progress can be terminal.
+                        if (not is_log_event(event)
+                                and event["state"] in TERMINAL_RUN_STATES):
                             return True
                 except requests.RequestException:
                     # A read timeout or a dropped connection mid-stream. The
@@ -1488,7 +1642,7 @@ class ToolServerClient:
         holder = {}
 
         def capture(event):
-            if event.get("state") in TERMINAL_RUN_STATES:
+            if not is_log_event(event) and event.get("state") in TERMINAL_RUN_STATES:
                 holder["event"] = event
             if event_cb is not None:
                 event_cb(event)

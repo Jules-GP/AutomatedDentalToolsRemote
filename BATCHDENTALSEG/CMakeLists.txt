@@ -2,12 +2,12 @@
 set(MODULE_NAME BATCHDENTALSEG)
 
 #-----------------------------------------------------------------------------
+# Testing/ is NOT shipped. No code here imports it: it came with the local module
+# whose inference it tested, and that inference is the server's now. It would
+# also install as a top-level `Testing` package in qt-scripted-modules, which is
+# a generic name to occupy for files nothing reads.
 set(MODULE_PYTHON_SCRIPTS
   ${MODULE_NAME}.py
-  Testing/__init__.py
-  Testing/IntegrationTestCase.py
-  Testing/SegmentationWidgetTestCase.py
-  Testing/Utils.py
 )
 
 set(MODULE_PYTHON_RESOURCES

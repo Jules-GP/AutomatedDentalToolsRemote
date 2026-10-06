@@ -469,15 +469,18 @@ class TestInputPicker(unittest.TestCase):
         # hosted files wrapped around the local picker (see TestServerSideInput).
         self.assertIsInstance(widget, formgen.ServerFileInput)
         self.assertIsInstance(widget.local, formgen.FileOrFolderInput)
-        # Both browse buttons exist: a DICOM series is a directory and has no
-        # extension a file dialog could match.
-        self.assertTrue(hasattr(widget.local, "fileButton"))
-        self.assertTrue(hasattr(widget.local, "folderButton"))
+        # The row accepts both kinds: a DICOM series is a directory and has no
+        # extension a file dialog could match. There is ONE button now and which
+        # dialog it opens follows the chosen source, so what the row accepts is
+        # read off `modes` -- which FileOrFolderInput publishes for exactly this
+        # reason -- and no longer off a pair of buttons.
+        self.assertEqual(widget.local.modes, ("file", "folder"))
 
     def test_file_dialog_filter_lists_every_accepted_extension(self):
         widget = formgen.file_widget(_argument("input"), "file_or_folder")
         qt.QFileDialog.next_file = "/tmp/scan.nii.gz"
-        widget.local._onBrowseFile()
+        # "file" is the mode a row accepting both starts in.
+        widget.local._onSelect()
 
         filters = qt.QFileDialog.last_open_file_args[-1]
         for extension in (".nii.gz", ".nrrd", ".gipl.gz", ".vtk", ".stl", ".zip"):
@@ -490,7 +493,8 @@ class TestInputPicker(unittest.TestCase):
 
         widget = formgen.file_widget(_argument("input"), "file_or_folder")
         qt.QFileDialog.next_directory = directory
-        widget.local._onBrowseFolder()
+        widget.local.setBrowseMode("folder")
+        widget.local._onSelect()
 
         self.assertEqual(widget.currentPath, directory)
         # The upload path branches on this, never on something the user had to
@@ -671,15 +675,20 @@ class TestSelectionGroups(unittest.TestCase):
             for option, checked in _argument(name)["choices"].items():
                 self.assertEqual(group.boxes[option].isChecked(), checked, option)
 
-    def test_the_server_wording_is_visible_not_just_a_tooltip(self):
+    def test_the_server_wording_hangs_off_the_rows_label(self):
         # Which group applies depends on data the client has not looked at, so
-        # "CBCT only" has to be on screen next to the boxes.
-        group = formgen.MultiChoiceGroup(
-            _argument("cbct_regions")["choices"], _argument("cbct_regions")["description"]
-        )
-        hints = [w for w in group.container.layout.widgets if isinstance(w, qt.QLabel)]
-        self.assertEqual(len(hints), 1)
-        self.assertIn("CBCT only", hints[0].text)
+        # "CBCT only" has to reach the reader. It does it as the row LABEL's
+        # tooltip -- not as a widget among the boxes, and not on the group's
+        # container, which Qt would hand down to every child: ALI is the panel
+        # that proved why, its 304-character note on `landmarks` popping up
+        # under each of 236 chips. See MultiChoiceGroup and ServerToolsCore's
+        # test_the_description_is_hovered_on_the_label.
+        layout = qt.QFormLayout()
+        group = formgen.build(ALI_SCHEMA["arguments"], layout)["cbct_regions"]
+
+        label = dict((field, label) for label, field in layout.rows)[group.container]
+        self.assertIn("CBCT only", label.toolTip())
+        self.assertFalse(group.container.toolTip())
 
     def test_an_unchecked_option_is_sent_as_false_not_omitted(self):
         group = formgen.MultiChoiceGroup(_argument("cbct_regions")["choices"])
@@ -751,7 +760,7 @@ class TestLandmarkSelection(unittest.TestCase):
     def test_the_catalog_is_rendered_as_the_servers_own_tabs(self):
         spec = self._spec()
         group = formgen.MultiChoiceGroup(
-            spec["choices"], spec["description"], layout=spec["ui"], groups=spec["groups"]
+            spec["choices"], layout=spec["ui"], groups=spec["groups"]
         )
         tabs = [w for w in group.container.layout.widgets if isinstance(w, qt.QTabWidget)]
         self.assertEqual(len(tabs), 1)

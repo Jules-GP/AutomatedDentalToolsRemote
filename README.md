@@ -1,127 +1,182 @@
-# Slicer Automated Dental Tools — Cloud
+# Automated Dental Tools Remote
 
-> **This page is inherited from the upstream extension and still describes the
-> local modules**: the conda environments they build, the models they download,
-> the CLIs they drive. **That is not what this repository is.**
->
-> This is the **cloud client**: each module is a thin panel that discovers a
-> tool through `GET /tools` on a remote server, uploads its inputs, and loads
-> the result back into the scene. There is no local inference, no environment
-> to build and no model to download — a laptop that cannot run a segmentation
-> can still ask for one.
->
-> - **How the client works**, file by file: [ARCHITECTURE.md](ARCHITECTURE.md)
->   — read this one first, it is the authoritative reference.
-> - **The server**:
->   [VISOR-serve](https://github.com/DCBIA-OrthoLab/VISOR-serve)
->   — routes, auth, dispatch, the `/DATA` store. It knows no dental tool.
-> - **The tools**: [SADT-VISOR](https://github.com/DCBIA-OrthoLab/SADT-VISOR) — one
->   isolated project per tool, each with its own interpreter and its own pins.
->   What a tool computes, and what it was validated against, is in its own
->   README there.
-> - **Upstream**:
->   [SlicerAutomatedDentalTools](https://github.com/DCBIA-OrthoLab/SlicerAutomatedDentalTools)
->   — the origin of every algorithm.
->
-> The sections below remain useful as a description of what each tool *does*
-> clinically. Where they describe installation, model downloads or module
-> internals, they describe the upstream extension and not this one.
-
-The Slicer Automated Dental Tools extension provides automatic dental and craniofacial analysis capabilities. It features a user-friendly graphical interface on 3D Slicer, enabling users to perform complex tasks without any coding expertise.
-
-
+Automatic dental and craniofacial analysis in 3D Slicer — segmentation,
+landmark identification, orientation, registration and classification of CBCT
+scans, intraoral surface scans and MRI. Every computation runs on a remote tool
+server, so a laptop that cannot run a segmentation can still ask for one:
+nothing is installed into Slicer's interpreter and no model is downloaded.
 
 <p align="center">
-    <img src="SlicerAutomaticTools.png" alt="Extension Logo" width="200"/>
+    <img src="SlicerAutomaticTools.png" alt="Automated Dental Tools Remote logo" width="200"/>
 </p>
-
-**Compatible with both stable and nightly versions of 3D Slicer.** 
-Latest versions supported: **5.7.0 (nightly)** and **5.6.1 (stable)** 
-## Overview
-
-Slicer automated dental tools is an extension that allows users to perform automatic **segmentation**, **landmark identification** and **Automatic Orientation** on CBCT scans and Intra Oral Scan (IOS) using machine learning tools where the learning mdoels are continously updated.
-
 
 <p align="center">
-<img src="ADT-exemple.png" alt="Exemples"/>
+<img src="ADT-exemple.png" alt="Examples of automated segmentation, landmarking and registration"/>
 </p>
 
-## Features
+**Compatible with the stable and nightly versions of 3D Slicer.** Modules appear
+under the `Automated Dental Tools` category.
 
+---
 
-* **Simple**: Perform time consuming task with a few clicks.
-* **Automatic**: Automate important Dental and Cranio Facial analysis tasks.
-* **Flexible**: The user can choose which models to use to perform the automated task. New models can be added easily.
+## ⚠️ Your data leaves this machine
 
+This extension is a **client**. The modules listed as server-backed below upload
+the files you select to a tool server over the network, where the computation
+happens, and download the result back into the scene. The remaining modules —
+`MRI2CBCT`, `CNE`, `Medical Data Anonymizer`, `VISU` and `Agent` — run on this
+machine and send nothing.
+
+**There is no de-identification in the current client.** Files are streamed to
+the server as they are on disk, with their names, their DICOM headers and
+whatever identifiers they contain. The de-identification pipeline is specified
+in [SECURITY.md](SECURITY.md) but is **not yet implemented**.
+
+Consequences you must accept before using this extension on patient data:
+
+- Out of the box the client points at `http://localhost:8000` with a development
+  token, so nothing leaves the machine until you change it. Set the address in
+  the **Server Tools Settings** module, and point it only at a server you or
+  your institution control.
+- TLS certificate verification is **off** by default (`VERIFY_TLS = False` in
+  `ServerToolsCore/ServerToolsCoreLib/config.py`). Turn it on before sending
+  anything over a network you do not control.
+- De-identify your data **before** selecting it, or confine use to data that
+  carries no protected health information.
+- Check that the arrangement between your institution and whoever operates the
+  server covers the data you are about to send.
+
+`MRI2CBCT` is the one imaging module not yet ported to the server: it installs
+nnU-Net into Slicer's Python environment and downloads its model on first use.
+`CNE` likewise installs `llama-cpp-python` and downloads a language model.
+
+---
+
+## How it is put together
+
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** — how the client works, file by file.
+  Start here; it is the authoritative reference.
+- **[VISOR-serve](https://github.com/DCBIA-OrthoLab/VISOR-serve)** — the server:
+  routes, auth, dispatch, the `/DATA` store. It knows no dental tool.
+- **[SADT-VISOR](https://github.com/DCBIA-OrthoLab/SADT-VISOR)** — the tools: one
+  isolated project per tool, each with its own interpreter and its own pins.
+  What a tool computes, and what it was validated against, is in its README
+  there.
+- **[SlicerAutomatedDentalTools](https://github.com/DCBIA-OrthoLab/SlicerAutomatedDentalTools)**
+  — the upstream extension, where every algorithm here originates, and which
+  runs the same tools locally.
+
+A module's panel is **generated from the server's tool descriptor** (`GET
+/tools`) rather than written by hand, so a field added to a tool server-side
+appears in Slicer with no client release. This is why most modules ship no `.ui`
+file: that is the design, not an omission.
+
+> **Do not install this extension alongside
+> [SlicerAutomatedDentalTools](https://github.com/DCBIA-OrthoLab/SlicerAutomatedDentalTools).**
+> Use one or the other: this client is meant to replace the local extension, not
+> to run next to it.
+>
+> They cannot share a Slicer. 34 of this extension's 41 modules carry the same
+> names as the upstream ones, and four of its helper packages do too
+> (`MRI2CBCT_utils`, `Agent_CLI_utils`, `MRI2CBCT_CLI_utils`, `Testing`). Slicer
+> registers whichever of two same-named modules comes first in the module search
+> path and **silently drops the other — no warning, no error** — so which
+> extension you are running would depend on install order, with nothing in the
+> interface to tell you. Shared package names are worse: because each module
+> directory goes on `sys.path`, they make the *upstream* modules fail to import.
+>
+> Both extensions are listed in the Extensions Catalog during the transition, so
+> either can be downloaded. Installing them together is what is unsupported.
+
+---
 
 ## Modules
 
-| Name | Description |
-|------|-------------|
-| [AMASSS](#amasss-module) | Perform automatic segmentation of CBCT scan. AMASSS is an acronym for Automatic Multi-Anatomical Skull Structure Segmentation. |
-| [ALI](#ali-module) | Perform automatic landmark identification on either CBCT or IOS scans. ALI is an acronym for Automatic Landmark Identification. |
-| [ASO](#aso-module) | Perform automatic orientation either on IOS or CBCT files. |
-| [AReg](#areg-module) | Perform automatic registration on IOS or CBCT files. |
-| [AutoCrop3D](#autocrop3d-module) | Automatically crop a folder of CBCT scans with the same region of interest. |
-| [AutoMatrix](#automatrix-module)| Automatically apply one or different matrix to a folder of IOS or CBCT scans. |
-| [MedX](#medx-module) | Summarize clinical notes and generate a comprehensive comorbidity dashboard. |
-| [Medical Data Anonymizer](#medical-data-anonymizer-module) | Automatically anonymize sensitive information in medical documents (DOCX, PDF, TXT, CSV, XML, ODT). |
-| [MRI2CBCT](#mri2cbct-module) | Contains the steps to perform the registration of MRI and CBCT scans.|
-| [FlexReg](#flex-reg) | Registration of IOS patient per patient with customizable patch creation. |
-| [DOCShapeAXI](#doc-shapeaxi) | Automatic classification of 3D Shape. DOC-ShapeAXI is an acronym for Dental Oral and Craniofacial Shape Analysis eXplainability and Interpretability. |
-| [BatchDentalSegmentator](#BatchDentalSeg) | DentalSegmentator in batch for mixed or permanent dentition |
-| [CLI-C](#CLI-C-module) |Classification and Localization of Impacted Canines |
-| [VFACE](#vface-module) | Visual Facial Asymmetry Classification Engine. Automated classification of facial asymmetry. |
-| [GreedyReg](#greedyreg-module) | ITK-SNAP style registration of CBCT scans using the Greedy engine (manual, automatic and distant modes, single or batch). |
-| [Agent](#agent-module) | AI assistant that runs the other modules from a natural-language request, using a local LLM. |
-
-These modules provide a convenient user interface, are available through the `Automated Dental Tools` module category, and share common features :
-
-**Input**
-- All modules can work with one file or a whole sample (folder) as input.
-- If the input is a single file already loaded, the result of the predicton will directly show up on the slice views.
-
-**Output**
-- By selecting the "Group output in a folder" checkbox, all the ouput files will be grouped in a single folder for each patient.
-- All modules allows the user to save the output in the input folder, or by unchecking the "Save prediction in scan folder" the user can choose a custom output folder.
-- The "Prediction ID" field is for the user to choose what will appear on the output file name. ("Pred" by default)
-
-
-Additionally, the following modules are implemented as python scripted command-line (CLI) modules available in the `Automated Dental Tools.Advanced`  module category and are used internally by the modules described above.
+Panels that send work to the server:
 
 | Name | Description |
 |------|-------------|
-| [AMASSS_CLI](AMASSS_CLI) | Perform automatic segmentation of CBCT scans |
-| [ALI-CBCT](ALI_CBCT) | Perform automatic landmark identification of CBCT scans|
-| [ALI-IOS](ALI_IOS) | Perform automatic landmark identification of IOS scans|
-| [ASO-CBCT](ASO_CBCT) | Perform automatic orientation of CBCT scans |
-| [ASO-IOS](ASO_IOS) | Perform automatic orientation of IOS scans |
-| [AReg-CBCT](AREG_CBCT) | Perform automatic registration of CBCT scans |
-| [AReg-IOS](AREG_IOS) | Perform automatic registration of IOS scans |
-| [AutoMatrix-CLI](Automatrix_CLI) | Apply transformation matrices to input volumes or landmarks |
-| [MedX-Dashboard](MedX_CLI/MedX_Dashboard) | CCreate a visual dashboard from structured comorbidity summaries |
-| [MedX-Summarize](MedX_CLI/MedX_Summarize) | Extract TMJ-related comorbidities from unstructured clinical notes using a fine-tuned LLM |
-| [Medical Data Anonymizer](#medical-data-anonymizer-module) | Automatically anonymized text files. |
-| [MRI2CBCT_APPROX](MRI2CBCT_CLI/MRI2CBCT_APPROX) | Perform automatic approximation of an MRI to a CBCT |
-| [MRI2CBCT_LR_CROP](MRI2CBCT_CLI/MRI2CBCT_LR_CROP) | Separate volumes into left and right halves for bilateral analysis |
-| [MRI2CBCT_ORIENT_CENTER_MRI](MRI2CBCT_CLI/MRI2CBCT_ORIENT_CENTER_MR) | Perform orientation and centering of MRI scans |
-| [MRI2CBCT_RESAMPLE_CBCT_MRI](MRI2CBCT_CLI/MRI2CBCT_RESAMPLE_CBCT_MRI) | Perform resample of MRI and CBCT scans |
-| [MRI2CBCT_REG](MRI2CBCT_CLI/MRI2CBCT_REG) | Perform registration of MRI-CBCT scans |
-| [MRI2CBCT_TMJ_CROP](MRI2CBCT_CLI/MRI2CBCT_TMJ_CROP) | Automatically crop the TMJ region from CBCT, segmentations, or MRI |
-| [FlexReg_CLI](FlexReg_CLI) | Perform creation of patch and registration on IOS scans. |
-| [DOCShapeAXI](DOCShapeAXI_CLI) | Perform automatic classification of 3D Shape. |
-| [BatchDentalSegmentator](BATCHDENTALSEG) | DentalSegmentator in batch for mixed or permanent dentition |
-| [CLI-C](CLIC) |Classification and Localization of Impacted Canines |
-| [VFACE_CLI](VFACE_CLI) | Classify automatically facial asymmetry based on linear and angluar measurements |
-| [GreedyReg_CLI](GreedyReg_CLI) | Run Greedy-based registration of CBCT scans |
-| [Agent_CLI](Agent_CLI) | Route a natural-language request to the right tool, extract its parameters and build the command to run |
+| [AMASSS](#amasss-module) | Segments the skull structures of a CBCT scan. Acronym for Automatic Multi-Anatomical Skull Structure Segmentation. |
+| [ALI](#ali-module) | Places anatomical landmarks on a CBCT scan or an intraoral surface scan; the server picks the engine from what the input holds. Acronym for Automatic Landmark Identification. |
+| [ASO](#aso-module) | Reorients CBCT scans or intraoral surface scans into a standardized frame. Acronym for Automated Standardized Orientation. |
+| [AReg](#areg-module) | Registers two timepoints of the same patient, for CBCT or intraoral surface scans. Acronym for Automated REGistration. |
+| [Crown Segmentation](Crown_Seg) | Labels an intraoral surface scan tooth by tooth. Its output is the precondition for ALI's IOS landmarks and for the IOS modes of ASO, AReg and FlexReg. |
+| [AutoCrop3D](#autocrop3d-module) | Crops a folder of CBCT scans to one region of interest drawn in Slicer. |
+| [AutoMatrix](#automatrix-module) | Applies one or several transformation matrices to a folder of scans or landmark files. |
+| [FlexReg](#flexreg-module) | Registers two intraoral arches on a patch the clinician draws, rather than on the whole mesh, because teeth move between timepoints and the palate does not. |
+| [GreedyReg](#greedyreg-module) | Affine registration of CBCT scans with the Greedy engine, in landmark, automatic or combined mode, single or batch. |
+| [BatchDentalSegmentator](#batchdentalseg) | Segments teeth and jaw structures on dental CT and CBCT in batch, for mixed or permanent dentition. |
+| [CLI-C](#cli-c-module) | Localizes and classifies impacted canines on CBCT. Acronym for Classification and Localization of Impacted Canines. |
+| [DOCShapeAXI](#docshapeaxi-module) | Grades a 3D surface and returns the GradCAM surface that explains the grade. Acronym for Dental Oral and Craniofacial Shape Analysis eXplainability and Interpretability. |
+| [VFACE](#vface-module) | Measures facial asymmetry and longitudinal change, then classifies it. Acronym for Visual Facial Asymmetry Classification Engine. |
+| [SurgMovPred](SurgMovPred) | Predicts the soft-tissue outcome of a planned surgical movement. |
 
+Panels that do not send work to the server:
+
+| Name | Description |
+|------|-------------|
+| [CNE](#cne-module) | Summarizes clinical notes with a local language model and builds a comorbidity dashboard from them. Successor of the former `MedX` module. |
+| [MRI2CBCT](#mri2cbct-module) | Registers MRI onto CBCT of the temporomandibular joint. **The one imaging module not yet ported to the server**: it installs nnU-Net into Slicer's interpreter and downloads its model on first use. |
+| [VISU](VISU) | Opens a folder a tool has already produced and pairs scan, mask and landmarks for review, one case at a time, with the arrow keys to step through a cohort. Computes nothing. |
+| [Medical Data Anonymizer](#medical-data-anonymizer-module) | Anonymizes identifiers in medical documents (DOCX, PDF, TXT, CSV, XML, ODT) on this machine. |
+| [Agent](#agent-module) | Runs the other modules from a request in plain language, using a local LLM. |
+| [Slicer Cloud](SlicerCloud) | Stands a tool server up from inside Slicer and keeps it current: clones the server repository, starts the container, and chooses which model bundles land on disk. |
+| [Server Tools Settings](ServerToolsSettings) | Sets the server address and credentials every other module uses, and tests the connection. |
+
+Two modules carry no panel of their own and sit in the
+`Automated Dental Tools.Advanced` category:
+
+| Name | Description |
+|------|-------------|
+| [Server Tools Core](ServerToolsCore) | Hidden module whose only purpose is to make `ServerToolsCoreLib` — the HTTP client, the panel generator and the background worker — importable by every other module. |
+| [Example Tool](ExampleTool) | Minimal reference panel, kept as the worked example of what a module built on the generated-panel base class reduces to. |
+
+### Legacy command-line modules
+
+These directories are the CLI modules of the former local extension. They are
+still built, so they appear under `Automated Dental Tools.Advanced`, but the
+panels above no longer drive them — the sequencing they existed for is the
+server's now. Three are still in use.
+
+| Name | Description | Still used |
+|------|-------------|------------|
+| [Agent_CLI](Agent_CLI) | Routes a request in plain language to the right tool, extracts its parameters and builds the command to run. | yes, by `Agent` |
+| [CNE_CLI](CNE_CLI) | Runs the clinical-note summarization and builds the dashboard. | yes, by `CNE` |
+| [MRI2CBCT_CLI](MRI2CBCT_CLI) | Orientation, resampling, approximation, left/right and TMJ cropping, and registration steps of the MRI-to-CBCT chain. | yes, by `MRI2CBCT` |
+| [ALI_CBCT](ALI_CBCT) / [ALI_IOS](ALI_IOS) | Landmark identification on CBCT and on intraoral scans. | no — see `ALI` |
+| [ASO_CBCT](ASO_CBCT) / [ASO_IOS](ASO_IOS) | Standardized orientation of CBCT and of intraoral scans. | no — see `ASO` |
+| [AREG_CBCT](AREG_CBCT) / [AREG_IOS](AREG_IOS) / [AREG_IOSCBCT](AREG_IOSCBCT) | Registration of CBCT, of intraoral scans, and across the two. | no — see `AReg` |
+| [VFACE_CLI](VFACE_CLI) | Facial asymmetry classification from linear and angular measurements. | no — see `VFACE` |
+
+### Features shared by every server-backed panel
+
+**Input** — a single file or a whole folder. If the input is a file already
+loaded in the scene, the result is shown on the slice views when it comes back.
+
+**Output** — the result can be written next to the input or into a folder you
+choose, grouped per patient, with a prediction identifier of your choosing in
+the output file names.
+
+---
 
 ## Requirements
 
-* In addition of the [Slicer System requirements](https://slicer.readthedocs.io/en/latest/user_guide/getting_started.html#system-requirements), for best performance, 12GB of memory is recommended.
-* :warning: Trained networks are required to be manually downloaded. See requirements section specific to each module.
+* 3D Slicer, stable or nightly. See the
+  [Slicer system requirements](https://slicer.readthedocs.io/en/latest/user_guide/getting_started.html#system-requirements).
+* **A reachable tool server.** Set its address in **Server Tools Settings**, or
+  deploy one with **Slicer Cloud**. Without it, every server-backed module is
+  inert.
+* No GPU, no conda environment and no model download are needed for the
+  server-backed modules — that is the point of this client. The exceptions are
+  `MRI2CBCT` and `CNE`, which install their own dependencies and download their
+  own models; for those, roughly 12 GB of memory is recommended.
 
+## Citing
+
+A DOI is registered for this software; see [CITATION.cff](CITATION.cff)
+([10.5281/zenodo.22150410](https://doi.org/10.5281/zenodo.22150410)). The
+algorithms themselves are published through the upstream extension,
+[SlicerAutomatedDentalTools](https://github.com/DCBIA-OrthoLab/SlicerAutomatedDentalTools).
 
 ---
 
@@ -361,7 +416,7 @@ For the **Fully-Automated** Mode, models are required as input, use the `Select`
 
 ## AutoCrop3D Module
 
-<img src="AutoCrop3D/Crop_Volumes_UI/Resources/Icons/AutoCrop3D.png" alt="Extension Logo" width="60"/>
+<img src="AutoCrop3D/Resources/Icons/AutoCrop3D.png" alt="AutoCrop3D icon" width="60"/>
 
 AutoCrop3D stands for "Scans automatically cropped" according to a Region Of Interest (ROI).
 
@@ -448,16 +503,21 @@ There is button "Mirror" that will automatically download the matrix mirror and 
 | **IOS** | .vtk .stl .vtp .off .obj | .tfm .npy .h5 .mat .txt|
 | **Landmark** | .mrk.json | .tfm .npy .h5 .mat .txt|
 
-## MedX Module
-<img src="MedX/Resources/Icons/MedX.png" alt="Extension Logo" width="70"/>
+## CNE Module
+<img src="CNE/Resources/Icons/CNE.png" alt="CNE icon" width="70"/>
 
-The **MedX** module provides a unified interface to extract clinical insight from raw notes and visualize patient-level comorbidities.
+The **CNE** module extracts clinical insight from raw notes and visualizes
+patient-level comorbidities. It is the successor of the former `MedX` module.
+
+Unlike the server-backed modules, CNE runs on this machine: it installs
+`llama-cpp-python` into Slicer's interpreter and downloads a quantized language
+model on first use.
 
 ### Features
 
 1. **Summarization:**
-   - **Input:** Folder to the clinical notes (`.pdf`, `.docx`, or `.txt`).
-   - **Model Selection:** 
+   - **Input:** Folder of clinical notes (`.pdf`, `.docx`, or `.txt`).
+   - **Model Selection:**
      - Click Download to fetch the pre-trained model.
      - Or set a custom model path manually.
    - **Output:** Folder where `.txt` summaries will be saved.
@@ -471,7 +531,7 @@ The **MedX** module provides a unified interface to extract clinical insight fro
 
 ## Medical Data Anonymizer Module
 
-<img src="Medical_Data_Anonymizer_Module/Resources/Icons/icon.png" alt="Extension Logo" width="70"/>
+<img src="Medical_Data_Anonymizer_Module/Resources/Icons/Medical_Data_Anonymizer_Module.png" alt="Medical Data Anonymizer icon" width="70"/>
 
 The **Medical Data Anonymizer** module provides automated anonymization of sensitive information in medical documents using AI-powered text analysis. It helps ensure HIPAA compliance and patient privacy protection by identifying and removing or replacing personally identifiable information (PII) and protected health information (PHI) from various document formats.
 
@@ -959,4 +1019,6 @@ Supported by NIDCR R01DE 024450, AA0F Grabber Family Teaching and Research Award
 
 # License
 
-This software is licensed under the terms of the [Apache Licence Version 2.0](LICENSE).
+This software is distributed under the terms of the **3D Slicer License**, a
+BSD-style license with additional clauses covering contributions and issues
+specific to 3D Slicer. The full text is in [LICENSE.txt](LICENSE.txt).

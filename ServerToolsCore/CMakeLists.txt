@@ -14,6 +14,9 @@ set(MODULE_PYTHON_SCRIPTS
   ServerToolsCoreLib/config.py
   ServerToolsCoreLib/errors.py
   ServerToolsCoreLib/client.py
+  ServerToolsCoreLib/transfer.py
+  ServerToolsCoreLib/digest.py
+  ServerToolsCoreLib/joystick.py
   ServerToolsCoreLib/slicer_io.py
   ServerToolsCoreLib/design.py
   ServerToolsCoreLib/formgen.py

@@ -17,13 +17,13 @@ authors:
   family-names: Cevidanes
   affiliation: Department of Orthodontics, Adams School of Dentistry, University of
     North Carolina at Chapel Hill, NC, USA
-repository-code: https://github.com/DCBIA-OrthoLab/AutomatedDentalToolsRemote
+repository-code: https://github.com/DCBIA-OrthoLab/SlicerAutomatedDentalToolsRemote
 keywords:
 - reproducible research
 - research software
 - dental imaging
 - dependency isolation
-license-url: https://github.com/DCBIA-OrthoLab/AutomatedDentalToolsRemote/blob/main/LICENSE
+license-url: https://github.com/DCBIA-OrthoLab/SlicerAutomatedDentalToolsRemote/blob/main/LICENSE.txt
 identifiers:
 - type: doi
   value: 10.5281/zenodo.22150410

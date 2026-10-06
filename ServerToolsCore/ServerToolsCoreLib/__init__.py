@@ -18,6 +18,7 @@ from .client import (
     argument_types,
     file_extensions_for,
     is_file_type,
+    is_log_event,
     new_run_id,
     testfile_entries,
 )
@@ -52,6 +53,7 @@ __all__ = [
     "RunCancelled",
     "new_run_id",
     "is_file_type",
+    "is_log_event",
     "argument_types",
     "accepts_folder",
     "file_extensions_for",
