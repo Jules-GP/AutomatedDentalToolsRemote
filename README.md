@@ -39,10 +39,11 @@ Consequences you must accept before using this extension on patient data:
   the **Server Tools Settings** module, and point it only at a server you or
   your institution control. See
   [Connecting this client to a server](#connecting-this-client-to-a-server).
-- TLS certificate verification is **off** by default (`VERIFY_TLS = False` in
-  `ServerToolsCore/ServerToolsCoreLib/config.py`). Before sending anything over
-  a network you do not control, either put the server on a private encrypted
-  mesh or turn verification on — which takes more than a `True`, see
+- TLS certificate verification is **on, and is not a setting**: no panel offers
+  to turn it off, because a client that cannot tell the real server from
+  something answering in its place protects neither the images nor the API key.
+  What this asks of you is the other half — the server has to present a
+  certificate this client can verify. See
   [Connecting this client to a server](#connecting-this-client-to-a-server).
 - De-identify your data **before** selecting it, or confine use to data that
   carries no protected health information.
@@ -71,18 +72,15 @@ and that certificate is signed by a public authority. In **Server Tools
 Settings**, this means:
 
 - **URL** — the `https://` address printed at the end of the server install;
-- **Token** — the server's API token, never its admin token;
-- **Verify TLS** — **on**, and there is nothing else to configure. The authority
-  is already in the certificate bundle `requests` ships, so verification needs
-  no file and no environment variable.
+- **Token** — the server's API token, never its admin token.
+
+That is the whole configuration. Certificate verification is already on and
+needs nothing: the authority behind that certificate is in the bundle
+`requests` ships, so no file and no environment variable are involved.
 
 A device that has not joined the tailnet cannot reach the address at all, which
 is the access control; removing it from the Tailscale admin console is how
 access is withdrawn.
-
-> `VERIFY_TLS` still defaults to `False` in `config.py`, which predates that
-> deployment shape. Against a server fronted by `tailscale serve` there is no
-> reason to leave it off.
 
 ### Where the address and the token live, and which one wins
 
@@ -118,22 +116,24 @@ ordinary local network it is not, and the panel warns. `deploy.host_addresses`
 classifies the interfaces and skips Docker's own bridges — binding to one of
 those publishes the server to containers and to nothing else.
 
-Against an `http://` address the *Verify TLS* box is never consulted: there is
-no certificate in play.
+Against an `http://` address certificate verification never comes into play:
+there is no certificate to verify, so pointing the client at a local
+development server on loopback is unaffected by it being mandatory.
 
 ### A certificate no public authority signed
 
 If a deployment is fronted by something other than `tailscale serve` and its
 certificate is self-signed or institutional, `VERIFY_TLS` also accepts **a path
-to that `.crt`**, and then verifies against it alone. Two things to know before
-trying:
+to that `.crt`**, and then verifies against it alone. It is a source edit, not a
+panel field, which is the point: verification can be pointed at another
+certificate but not switched off.
 
-- `requests` does not read the operating system's trust store. It reads the
-  bundle inside Slicer's own Python, so installing a certificate system-wide
-  never reaches this client, and neither does `REQUESTS_CA_BUNDLE` — Slicer's
-  launcher rebuilds its environment and that variable does not survive.
-- The panel's *Verify TLS* is a check box, so it cannot express a path, and
-  saving from the panel writes a boolean over a path set in `config.py`.
+One thing to know before trying, because it sends people down a dead end:
+`requests` does not read the operating system's trust store. It reads the bundle
+inside Slicer's own Python, so installing a certificate system-wide never
+reaches this client — and neither does `REQUESTS_CA_BUNDLE`, since Slicer's
+launcher rebuilds its environment and that variable does not survive. Naming the
+file in `VERIFY_TLS` is what works.
 
 ---
 
