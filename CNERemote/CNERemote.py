@@ -480,7 +480,7 @@ class CNERemoteLogic(ScriptedLoadableModuleLogic):
 
         # 1. Configuration of the model based on UI selection
         if notesType == "Ortho":
-                repo_id = "DCBIA-OrthoLab/Meta-Llama-3.1-8B-Instruct-Ortho"
+                repo_id = "DCBIA-OrthoLab/Llama-3.1-8B-Instruct-Ortho"
                 fileName = "model-q4_k_m.gguf" 
                 localModelName = "Meta-Llama-3.1-8B-Ortho.gguf"
                 dialogText = "Downloading Max Ortho AI model (approx. 4.9 GB)..."
